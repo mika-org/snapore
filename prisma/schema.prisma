@@ -1,0 +1,702 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum XenditEnvironment {
+  TEST
+  LIVE
+}
+
+enum BoothStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+  MAINTENANCE
+}
+
+enum DeviceType {
+  CAMERA
+  PRINTER
+  TABLET
+  KIOSK
+}
+
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+  PAIRING
+}
+
+enum CameraKind {
+  MEDIA_DEVICE
+  DSLR_TETHERED
+  REMOTE_TABLET
+}
+
+enum PrinterKind {
+  OS_SPOOLER
+  DNP
+  EPSON
+  ESC_POS
+  MOCK
+}
+
+enum LayoutKind {
+  GRID_2
+  GRID_4
+  GRID_6
+  GRID_8
+  CUSTOM
+}
+
+enum SessionStatus {
+  CREATED
+  LAYOUT_SELECTED
+  CAPTURING
+  REVIEWING
+  COMPOSED
+  CHECKOUT
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
+enum PaymentMode {
+  DISABLED
+  CASH
+  MANUAL
+  ONLINE_PROVIDER
+}
+
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  REFUNDED
+}
+
+enum PrintJobStatus {
+  QUEUED
+  SPOOLING
+  PRINTING
+  PRINTED
+  RETRYING
+  FAILED
+  CANCELLED
+}
+
+enum UploadJobStatus {
+  WAITING_FOR_PRINT_TRIGGER
+  QUEUED
+  UPLOADING
+  SYNCED
+  RETRYING
+  FAILED_PERMANENT
+}
+
+enum AssetKind {
+  ORIGINAL
+  THUMBNAIL
+  PREVIEW
+  COMPOSITE
+  FRAME
+  IDLE_MEDIA
+}
+
+model Tenant {
+  id               String               @id @default(dbgenerated("(gen_random_uuid())::text"))
+  slug             String               @unique
+  name             String
+  status           TenantStatus         @default(ACTIVE)
+  taxRate          Decimal              @default(11) @db.Decimal(5, 2)
+  pricesIncludeTax Boolean              @default(true)
+  defaultPrintCost Decimal              @default(5000) @db.Decimal(12, 2)
+  paymentFeeRate   Decimal              @default(0.7) @db.Decimal(5, 2)
+  paymentFeeFixed  Decimal              @default(0) @db.Decimal(12, 2)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  users            User[]
+  booths           Booth[]
+  frames           Frame[]
+  pricingRules     PricingRule[]
+  paymentConfig    TenantPaymentConfig?
+
+  @@index([status, name])
+}
+
+model TenantPaymentConfig {
+  id                    String            @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId              String            @unique
+  provider              String            @default("XENDIT")
+  environment           XenditEnvironment @default(TEST)
+  apiKeyEncrypted       String?
+  apiKeyLastFour        String?
+  webhookTokenEncrypted String?
+  webhookTokenLastFour  String?
+  enabled               Boolean           @default(false)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  tenant                Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id                String             @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId          String?
+  email             String             @unique
+  name              String
+  passwordHash      String?
+  role              UserRole           @default(VIEWER)
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  tenant            Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  auditLogs         AuditLog[]
+  sessionResetCodes SessionResetCode[]
+
+  @@index([tenantId, role, active])
+}
+
+model Booth {
+  id              String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId        String
+  code            String         @unique
+  name            String
+  location        String?
+  timezone        String         @default("Asia/Jakarta")
+  status          BoothStatus    @default(OFFLINE)
+  maintenanceMode Boolean        @default(false)
+  kioskEnabled    Boolean        @default(true)
+  lastHeartbeatAt DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  setting         BoothSetting?
+  devices         Device[]
+  sessions        PhotoSession[]
+  pricingRules    PricingRule[]
+  idleMedia       IdleMedia[]
+  auditLogs       AuditLog[]
+  frames          Frame[]
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([status, lastHeartbeatAt])
+}
+
+model BoothSetting {
+  id                      String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  boothId                 String      @unique
+  countdownSeconds        Int         @default(3)
+  maxRetakes              Int         @default(1)
+  idleTimeoutSeconds      Int         @default(90)
+  paymentMode             PaymentMode @default(DISABLED)
+  unprintedRetentionHours Int         @default(24)
+  syncedRetentionDays     Int         @default(7)
+  locale                  String      @default("id-ID")
+  config                  Json?
+  booth                   Booth       @relation(fields: [boothId], references: [id], onDelete: Cascade)
+}
+
+model Device {
+  id             String            @id @default(dbgenerated("(gen_random_uuid())::text"))
+  boothId        String
+  fingerprint    String
+  type           DeviceType
+  name           String
+  status         DeviceStatus      @default(OFFLINE)
+  preferred      Boolean           @default(false)
+  driverName     String?
+  firmware       String?
+  lastSeenAt     DateTime?
+  capabilities   Json?
+  config         Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  booth          Booth             @relation(fields: [boothId], references: [id], onDelete: Cascade)
+  cameraProfile  CameraProfile?
+  printerProfile PrinterProfile?
+  heartbeats     DeviceHeartbeat[]
+  printJobs      PrintJob[]
+  paperCounter   PaperCounter?
+
+  @@unique([boothId, fingerprint])
+  @@index([boothId, type, status])
+}
+
+model DeviceHeartbeat {
+  id        String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  deviceId  String
+  status    DeviceStatus
+  metrics   Json?
+  errorCode String?
+  createdAt DateTime     @default(now())
+  device    Device       @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, createdAt])
+}
+
+model CameraProfile {
+  id            String     @id @default(dbgenerated("(gen_random_uuid())::text"))
+  deviceId      String     @unique
+  kind          CameraKind
+  width         Int        @default(1920)
+  height        Int        @default(1080)
+  facingMode    String?
+  mirrorPreview Boolean    @default(true)
+  mirrorOutput  Boolean    @default(false)
+  rotation      Int        @default(0)
+  captureConfig Json?
+  device        Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model PrinterProfile {
+  id             String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  deviceId       String      @unique
+  kind           PrinterKind
+  mediaName      String      @default("4x6")
+  widthInches    Decimal     @default(4) @db.Decimal(6, 2)
+  heightInches   Decimal     @default(6) @db.Decimal(6, 2)
+  dpi            Int         @default(300)
+  orientation    String      @default("portrait")
+  borderless     Boolean     @default(true)
+  colorProfile   String?
+  maxCopies      Int         @default(10)
+  fallbackDevice String?
+  printConfig    Json?
+  device         Device      @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model PaperCounter {
+  id            String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  deviceId      String   @unique
+  currentSheets Int      @default(0)
+  capacity      Int      @default(400)
+  resetAt       DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model Layout {
+  id        String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  slug      String          @unique
+  name      String
+  kind      LayoutKind
+  active    Boolean         @default(true)
+  sortOrder Int             @default(0)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  versions  LayoutVersion[]
+
+  @@index([active, sortOrder])
+}
+
+model LayoutVersion {
+  id           String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  layoutId     String
+  version      Int
+  widthPx      Int            @default(1200)
+  heightPx     Int            @default(1800)
+  dpi          Int            @default(300)
+  published    Boolean        @default(false)
+  publishedAt  DateTime?
+  createdAt    DateTime       @default(now())
+  layout       Layout         @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  slots        LayoutSlot[]
+  sessions     PhotoSession[]
+  compositions Composition[]
+
+  @@unique([layoutId, version])
+  @@index([layoutId, published])
+}
+
+model LayoutSlot {
+  id              String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  layoutVersionId String
+  slotIndex       Int
+  x               Int
+  y               Int
+  width           Int
+  height          Int
+  rotation        Float         @default(0)
+  cropMode        String        @default("cover")
+  borderRadius    Int           @default(0)
+  zIndex          Int           @default(1)
+  mask            Json?
+  layoutVersion   LayoutVersion @relation(fields: [layoutVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([layoutVersionId, slotIndex])
+}
+
+model Frame {
+  id          String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId    String
+  boothId     String?
+  slug        String
+  name        String
+  description String?
+  active      Boolean        @default(true)
+  sortOrder   Int            @default(0)
+  activeFrom  DateTime?
+  activeUntil DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booth       Booth?         @relation(fields: [boothId], references: [id], onDelete: Cascade)
+  versions    FrameVersion[]
+
+  @@unique([tenantId, boothId, slug])
+  @@index([tenantId, boothId, active, sortOrder])
+  @@index([active, sortOrder])
+}
+
+model FrameVersion {
+  id           String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  frameId      String
+  version      Int
+  layoutKind   LayoutKind
+  widthPx      Int
+  heightPx     Int
+  assetPath    String
+  checksum     String
+  published    Boolean        @default(false)
+  publishedAt  DateTime?
+  createdAt    DateTime       @default(now())
+  frame        Frame          @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  sessions     PhotoSession[]
+  compositions Composition[]
+
+  @@unique([frameId, version, layoutKind])
+  @@index([layoutKind, published])
+}
+
+model PhotoSession {
+  id              String             @id @default(dbgenerated("(gen_random_uuid())::text"))
+  publicCode      String             @unique
+  boothId         String
+  layoutVersionId String?
+  frameVersionId  String?
+  status          SessionStatus      @default(CREATED)
+  localPath       String?
+  startedAt       DateTime           @default(now())
+  completedAt     DateTime?
+  cancelledAt     DateTime?
+  expiresAt       DateTime?
+  metadata        Json?
+  booth           Booth              @relation(fields: [boothId], references: [id])
+  layoutVersion   LayoutVersion?     @relation(fields: [layoutVersionId], references: [id])
+  frameVersion    FrameVersion?      @relation(fields: [frameVersionId], references: [id])
+  photos          CapturedPhoto[]
+  compositions    Composition[]
+  assets          Asset[]
+  order           Order?
+  uploadJobs      UploadJob[]
+  gallery         Gallery?
+  resetCodes      SessionResetCode[]
+
+  @@index([boothId, startedAt])
+  @@index([status, startedAt])
+}
+
+model SessionResetCode {
+  id            String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId     String
+  codeHash      String       @unique
+  codeEncrypted String
+  createdById   String
+  reason        String?
+  expiresAt     DateTime
+  usedAt        DateTime?
+  revokedAt     DateTime?
+  createdAt     DateTime     @default(now())
+  session       PhotoSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdBy     User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([sessionId, createdAt])
+  @@index([expiresAt, usedAt, revokedAt])
+}
+
+model CapturedPhoto {
+  id         String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId  String
+  slotIndex  Int?
+  selected   Boolean      @default(false)
+  capturedAt DateTime     @default(now())
+  width      Int
+  height     Int
+  checksum   String
+  localPath  String
+  source     CameraKind
+  metadata   Json?
+  session    PhotoSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  assets     Asset[]
+
+  @@unique([sessionId, checksum])
+  @@index([sessionId, capturedAt])
+}
+
+model Composition {
+  id              String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId       String
+  layoutVersionId String
+  frameVersionId  String?
+  width           Int
+  height          Int
+  checksum        String
+  localPath       String
+  previewPath     String?
+  createdAt       DateTime      @default(now())
+  session         PhotoSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  layoutVersion   LayoutVersion @relation(fields: [layoutVersionId], references: [id])
+  frameVersion    FrameVersion? @relation(fields: [frameVersionId], references: [id])
+  assets          Asset[]
+  printJobs       PrintJob[]
+
+  @@index([sessionId, createdAt])
+}
+
+model Asset {
+  id              String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId       String
+  capturedPhotoId String?
+  compositionId   String?
+  kind            AssetKind
+  mimeType        String
+  byteSize        Int
+  checksum        String
+  localPath       String?
+  objectKey       String?
+  syncedAt        DateTime?
+  createdAt       DateTime       @default(now())
+  session         PhotoSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  capturedPhoto   CapturedPhoto? @relation(fields: [capturedPhotoId], references: [id], onDelete: SetNull)
+  composition     Composition?   @relation(fields: [compositionId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, checksum, kind])
+  @@index([sessionId, syncedAt])
+}
+
+model PricingRule {
+  id             String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId       String
+  boothId        String?
+  name           String
+  layoutKind     LayoutKind?
+  mediaName      String?
+  basePrice      Decimal     @db.Decimal(12, 2)
+  additionalCopy Decimal     @db.Decimal(12, 2)
+  taxRate        Decimal     @default(0) @db.Decimal(5, 2)
+  active         Boolean     @default(true)
+  activeFrom     DateTime?
+  activeUntil    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booth          Booth?      @relation(fields: [boothId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
+  @@index([boothId, active])
+}
+
+model Order {
+  id             String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId      String       @unique
+  idempotencyKey String       @unique
+  copies         Int          @default(1)
+  subtotal       Decimal      @db.Decimal(12, 2)
+  tax            Decimal      @default(0) @db.Decimal(12, 2)
+  printCost      Decimal      @default(0) @db.Decimal(12, 2)
+  paymentFee     Decimal      @default(0) @db.Decimal(12, 2)
+  netProfit      Decimal      @default(0) @db.Decimal(12, 2)
+  total          Decimal      @db.Decimal(12, 2)
+  currency       String       @default("IDR")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  session        PhotoSession @relation(fields: [sessionId], references: [id])
+  payment        Payment?
+  printJobs      PrintJob[]
+}
+
+model Payment {
+  id                String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  orderId           String         @unique
+  mode              PaymentMode
+  status            PaymentStatus  @default(PENDING)
+  provider          String?
+  providerReference String?        @unique
+  amount            Decimal        @db.Decimal(12, 2)
+  paidAt            DateTime?
+  expiresAt         DateTime?
+  metadata          Json?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  order             Order          @relation(fields: [orderId], references: [id])
+  events            PaymentEvent[]
+}
+
+model WebhookEvent {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  provider        String
+  providerEventId String    @unique
+  eventType       String
+  payload         Json
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([provider, eventType, createdAt])
+}
+
+model PaymentEvent {
+  id         String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  paymentId  String
+  status     PaymentStatus
+  externalId String?       @unique
+  payload    Json?
+  createdAt  DateTime      @default(now())
+  payment    Payment       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+}
+
+model PrintJob {
+  id             String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  orderId        String
+  compositionId  String
+  deviceId       String?
+  idempotencyKey String         @unique
+  copies         Int            @default(1)
+  status         PrintJobStatus @default(QUEUED)
+  errorCode      String?
+  errorMessage   String?
+  queuedAt       DateTime       @default(now())
+  printedAt      DateTime?
+  updatedAt      DateTime       @updatedAt
+  order          Order          @relation(fields: [orderId], references: [id])
+  composition    Composition    @relation(fields: [compositionId], references: [id])
+  device         Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  attempts       PrintAttempt[]
+
+  @@index([status, queuedAt])
+  @@index([deviceId, status])
+}
+
+model PrintAttempt {
+  id          String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  printJobId  String
+  attempt     Int
+  status      PrintJobStatus
+  spoolerId   String?
+  errorCode   String?
+  errorDetail String?
+  startedAt   DateTime       @default(now())
+  finishedAt  DateTime?
+  printJob    PrintJob       @relation(fields: [printJobId], references: [id], onDelete: Cascade)
+
+  @@unique([printJobId, attempt])
+}
+
+model UploadJob {
+  id             String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId      String
+  idempotencyKey String          @unique
+  status         UploadJobStatus @default(WAITING_FOR_PRINT_TRIGGER)
+  attemptCount   Int             @default(0)
+  nextRetryAt    DateTime?
+  lastError      String?
+  queuedAt       DateTime?
+  syncedAt       DateTime?
+  updatedAt      DateTime        @updatedAt
+  session        PhotoSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  attempts       UploadAttempt[]
+
+  @@index([status, nextRetryAt])
+}
+
+model UploadAttempt {
+  id          String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  uploadJobId String
+  attempt     Int
+  status      UploadJobStatus
+  errorCode   String?
+  detail      String?
+  startedAt   DateTime        @default(now())
+  finishedAt  DateTime?
+  uploadJob   UploadJob       @relation(fields: [uploadJobId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadJobId, attempt])
+}
+
+model Gallery {
+  id        String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionId String         @unique
+  active    Boolean        @default(true)
+  expiresAt DateTime
+  createdAt DateTime       @default(now())
+  session   PhotoSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tokens    GalleryToken[]
+}
+
+model GalleryToken {
+  id        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  galleryId String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  gallery   Gallery   @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+
+  @@index([galleryId, expiresAt])
+}
+
+model IdleMedia {
+  id          String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  boothId     String?
+  title       String
+  mediaType   String
+  assetPath   String
+  sortOrder   Int       @default(0)
+  durationMs  Int       @default(10000)
+  muted       Boolean   @default(true)
+  active      Boolean   @default(true)
+  activeFrom  DateTime?
+  activeUntil DateTime?
+  booth       Booth?    @relation(fields: [boothId], references: [id], onDelete: Cascade)
+
+  @@index([boothId, active, sortOrder])
+}
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId     String?
+  boothId    String?
+  action     String
+  entityType String
+  entityId   String?
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  booth      Booth?   @relation(fields: [boothId], references: [id], onDelete: SetNull)
+
+  @@index([boothId, createdAt])
+  @@index([entityType, entityId])
+}

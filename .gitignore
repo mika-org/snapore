@@ -1,0 +1,13 @@
+node_modules/
+.tools/
+.next/
+out/
+coverage/
+dist-agent/
+.env
+.env.local
+src/generated/prisma/
+snapore-data/
+server-uploads/
+*.log
+.DS_Store

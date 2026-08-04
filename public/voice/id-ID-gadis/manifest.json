@@ -1,0 +1,125 @@
+{
+  "voice": "id-ID-GadisNeural",
+  "language": "id-ID",
+  "gender": "female",
+  "rate": "-4%",
+  "format": "mp3",
+  "assets": {
+    "idle": {
+      "file": "idle.mp3",
+      "text": "Hai! Selamat datang di Snapore. Yuk, bikin foto terbaikmu. Kalau sudah siap, sentuh tombol mulai, ya."
+    },
+    "payment": {
+      "file": "payment.mp3",
+      "text": "Silakan pindai kode QRIS di layar, ya. Setelah pembayarannya berhasil, sesi fotomu akan langsung dimulai."
+    },
+    "layout": {
+      "file": "layout.mp3",
+      "text": "Pembayarannya sudah berhasil. Sekarang, pilih jumlah foto yang kamu mau. Ada dua, empat, enam, atau delapan foto."
+    },
+    "frame": {
+      "file": "frame.mp3",
+      "text": "Bagus! Sekarang pilih frame yang paling kamu suka."
+    },
+    "capture-2": {
+      "file": "capture-2.mp3",
+      "text": "Oke, kamera sudah siap untuk dua foto. Lihat ke kamera, siapkan pose terbaikmu, lalu tekan tombol bulat."
+    },
+    "capture-4": {
+      "file": "capture-4.mp3",
+      "text": "Oke, kamera sudah siap untuk empat foto. Lihat ke kamera, siapkan pose terbaikmu, lalu tekan tombol bulat."
+    },
+    "capture-6": {
+      "file": "capture-6.mp3",
+      "text": "Oke, kamera sudah siap untuk enam foto. Lihat ke kamera, siapkan pose terbaikmu, lalu tekan tombol bulat."
+    },
+    "capture-8": {
+      "file": "capture-8.mp3",
+      "text": "Oke, kamera sudah siap untuk delapan foto. Lihat ke kamera, siapkan pose terbaikmu, lalu tekan tombol bulat."
+    },
+    "review": {
+      "file": "review.mp3",
+      "text": "Keren! Coba periksa setiap fotonya. Kamu bisa mengedit, atau mengambil ulang satu foto sebelum lanjut."
+    },
+    "checkout": {
+      "file": "checkout.mp3",
+      "text": "Semua foto sudah siap. Kalau hasilnya sudah pas, tekan konfirmasi untuk mulai mencetak."
+    },
+    "printing": {
+      "file": "printing.mp3",
+      "text": "Foto kamu sedang dicetak. Tunggu sebentar, ya."
+    },
+    "done": {
+      "file": "done.mp3",
+      "text": "Selesai! Silakan ambil hasil cetaknya. Jangan lupa pindai kode galeri untuk menyimpan dan membagikan fotomu."
+    },
+    "countdown-3": {
+      "file": "countdown-3.mp3",
+      "text": "Tiga."
+    },
+    "countdown-2": {
+      "file": "countdown-2.mp3",
+      "text": "Dua."
+    },
+    "countdown-1": {
+      "file": "countdown-1.mp3",
+      "text": "Satu."
+    },
+    "smile": {
+      "file": "smile.mp3",
+      "text": "Senyum!"
+    },
+    "photo-success": {
+      "file": "photo-success.mp3",
+      "text": "Sip, fotonya berhasil. Bersiap untuk pose berikutnya, ya."
+    },
+    "retake-success": {
+      "file": "retake-success.mp3",
+      "text": "Foto berhasil diambil ulang."
+    },
+    "capture-complete": {
+      "file": "capture-complete.mp3",
+      "text": "Pengambilan foto selesai. Silakan periksa hasilnya."
+    },
+    "voice-enabled": {
+      "file": "voice-enabled.mp3",
+      "text": "Panduan suara perempuan Bahasa Indonesia sudah aktif."
+    },
+    "reset-code": {
+      "file": "reset-code.mp3",
+      "text": "Masukkan kode reset enam digit yang diberikan oleh petugas."
+    },
+    "retake-1": {
+      "file": "retake-1.mp3",
+      "text": "Silakan ambil ulang foto nomor 1."
+    },
+    "retake-2": {
+      "file": "retake-2.mp3",
+      "text": "Silakan ambil ulang foto nomor 2."
+    },
+    "retake-3": {
+      "file": "retake-3.mp3",
+      "text": "Silakan ambil ulang foto nomor 3."
+    },
+    "retake-4": {
+      "file": "retake-4.mp3",
+      "text": "Silakan ambil ulang foto nomor 4."
+    },
+    "retake-5": {
+      "file": "retake-5.mp3",
+      "text": "Silakan ambil ulang foto nomor 5."
+    },
+    "retake-6": {
+      "file": "retake-6.mp3",
+      "text": "Silakan ambil ulang foto nomor 6."
+    },
+    "retake-7": {
+      "file": "retake-7.mp3",
+      "text": "Silakan ambil ulang foto nomor 7."
+    },
+    "retake-8": {
+      "file": "retake-8.mp3",
+      "text": "Silakan ambil ulang foto nomor 8."
+    }
+  }
+}

@@ -1,0 +1,2 @@
+ALTER TABLE "Tenant" ALTER COLUMN "updatedAt" DROP DEFAULT;
+ALTER TABLE "TenantPaymentConfig" ALTER COLUMN "updatedAt" DROP DEFAULT;

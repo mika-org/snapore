@@ -1,0 +1,390 @@
+"use client";
+
+import {
+  Aperture,
+  BarChart3,
+  Building2,
+  ChevronRight,
+  CircleDollarSign,
+  Copy,
+  CreditCard,
+  ImagePlus,
+  Images,
+  KeyRound,
+  LayoutDashboard,
+  LoaderCircle,
+  LogOut,
+  Menu,
+  Monitor,
+  Pencil,
+  Power,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Settings2,
+  ShieldCheck,
+  Store,
+  Users,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { FrameManager } from "@/components/frame-manager";
+import { formatCurrency } from "@/lib/format";
+
+type Tenant = {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  taxRate: number;
+  pricesIncludeTax: boolean;
+  defaultPrintCost: number;
+  paymentFeeRate: number;
+  paymentFeeFixed: number;
+  counts: { users: number; booths: number; frames: number };
+  payment: { enabled: boolean; environment: "TEST" | "LIVE"; apiKeyMasked: string | null; webhookTokenMasked: string | null };
+};
+
+type ManagedUser = { id: string; tenantId: string | null; name: string; email: string; role: string; active: boolean };
+
+type Overview = {
+  tenants: Tenant[];
+  users: ManagedUser[];
+  booths: Array<{ id: string; tenantId: string; tenant: string; code: string; name: string; location: string | null; status: string; kioskEnabled: boolean; maintenanceMode: boolean; resourceReady: boolean; readinessReason: string | null; layoutCounts: number[]; kioskUrl: string; devices: Array<{ id: string; name: string; type: string; status: string }> }>;
+  sessions: Array<{
+    id: string;
+    publicCode: string;
+    tenantId: string;
+    tenant: string;
+    boothId: string;
+    booth: string;
+    boothCode: string;
+    status: string;
+    startedAt: string;
+    completedAt: string | null;
+    layout: string | null;
+    frame: string | null;
+    photoCount: number;
+    copies: number;
+    total: number;
+    paymentStatus: string;
+    uploadStatus: string | null;
+    resettable: boolean;
+    activeReset: { code: string | null; expiresAt: string; reason: string | null } | null;
+  }>;
+  sales: Array<{ tenant: string; booth: string; device: string; orders: number; prints: number; gross: number; tax: number; printCost: number; paymentFee: number; netProfit: number }>;
+};
+
+type AdminView = "overview" | "create-tenant" | "tenants" | "users" | "booths" | "sessions" | "payments" | "sales";
+
+const emptyOverview: Overview = { tenants: [], users: [], booths: [], sessions: [], sales: [] };
+
+const menuItems: Array<{ id: AdminView; label: string; icon: typeof LayoutDashboard }> = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "create-tenant", label: "Tambah tenant", icon: Plus },
+  { id: "tenants", label: "Daftar tenant", icon: Building2 },
+  { id: "users", label: "User accounts", icon: Users },
+  { id: "booths", label: "Booth & kiosk", icon: Monitor },
+  { id: "sessions", label: "Sessions & reset", icon: Images },
+  { id: "payments", label: "Payment & pajak", icon: CreditCard },
+  { id: "sales", label: "Sales & profit", icon: BarChart3 },
+];
+
+const viewCopy: Record<AdminView, { eyebrow: string; title: string; description: string }> = {
+  overview: { eyebrow: "Global operations", title: "Command overview", description: "Pantau tenant, booth, transaksi, pajak, dan laba bersih dalam satu ringkasan." },
+  "create-tenant": { eyebrow: "Tenant onboarding", title: "Tambah tenant", description: "Buat workspace bisnis baru sebelum menambahkan user, booth, frame, dan konfigurasi pembayaran." },
+  tenants: { eyebrow: "Tenant directory", title: "Semua tenant", description: "Buka workspace setiap tenant dan lihat kepemilikan user, booth, serta frame." },
+  users: { eyebrow: "Identity & access", title: "User accounts", description: "Tambahkan akun global atau akun yang hanya memiliki akses ke satu tenant." },
+  booths: { eyebrow: "Device network", title: "Booth & kiosk", description: "Buat booth per tenant dan salin tautan kiosk UUID untuk perangkat tersebut." },
+  sessions: { eyebrow: "Session recovery", title: "Sessions & reset", description: "Lihat sesi setiap tenant dan buat kode pemulihan 6 digit untuk mengulang pengambilan foto." },
+  payments: { eyebrow: "Finance controls", title: "Payment & pajak", description: "Atur Xendit QRIS, biaya cetak, fee pembayaran, dan pajak untuk setiap tenant." },
+  sales: { eyebrow: "Profitability", title: "Sales & profit", description: "Pisahkan omzet dan laba bersih berdasarkan tenant, booth, serta perangkat printer." },
+};
+
+function formObject(form: HTMLFormElement) {
+  return Object.fromEntries(new FormData(form).entries());
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  if (!body.trim()) throw new Error(`Server tidak mengirim respons (${response.status}).`);
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(`Respons server tidak valid (${response.status}).`);
+  }
+}
+
+export function SuperAdminConsole({ name }: { name: string }) {
+  const [data, setData] = useState<Overview>(emptyOverview);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<AdminView>("overview");
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+  const [sessionTenantId, setSessionTenantId] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/super-admin", { cache: "no-store" });
+      const payload = await readJsonResponse<Overview & { error?: string; detail?: string }>(response);
+      if (!response.ok) throw new Error(payload.error ?? "Data gagal dimuat.");
+      setData(payload);
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Data gagal dimuat.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const send = async (action: Record<string, unknown>, label: string) => {
+    setSaving(label);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/super-admin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(action) });
+      const payload = await readJsonResponse<{ error?: string; message?: string }>(response);
+      if (!response.ok) throw new Error(payload.error ?? "Penyimpanan gagal.");
+      setMessage(payload.message ?? "Perubahan berhasil disimpan.");
+      await load();
+      return true;
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Penyimpanan gagal.");
+      return false;
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const submitSimple = (action: string) => async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = formObject(form);
+    const ok = await send({ action, ...values, tenantId: values.tenantId || null }, action);
+    if (ok) form.reset();
+  };
+
+  const totals = useMemo(
+    () => data.sales.reduce((result, row) => ({ gross: result.gross + row.gross, tax: result.tax + row.tax, net: result.net + row.netProfit }), { gross: 0, tax: 0, net: 0 }),
+    [data.sales],
+  );
+  const visibleTenants = selectedTenantId ? data.tenants.filter((tenant) => tenant.id === selectedTenantId) : data.tenants;
+  const visibleSessions = sessionTenantId ? data.sessions.filter((session) => session.tenantId === sessionTenantId) : data.sessions;
+  const selectedTenant = data.tenants.find((tenant) => tenant.id === selectedTenantId) ?? null;
+  const selectedTenantBooths = selectedTenantId
+    ? data.booths.filter((booth) => booth.tenantId === selectedTenantId).map((booth) => ({ id: booth.id, code: booth.code, name: booth.name }))
+    : [];
+  const copy = viewCopy[activeView];
+
+  const openView = (view: AdminView) => {
+    setActiveView(view);
+    setSidebarOpen(false);
+    setSelectedTenantId(null);
+  };
+
+  const openTenantWorkspace = (tenantId: string) => {
+    setSelectedTenantId(tenantId);
+    setActiveView("payments");
+    setSidebarOpen(false);
+  };
+
+  const generateResetCode = async (sessionId: string) => {
+    const label = `reset-${sessionId}`;
+    setSaving(label);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/super-admin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "generateSessionReset", sessionId }),
+      });
+      const payload = await readJsonResponse<{ code?: string; expiresAt?: string; error?: string }>(response);
+      if (!response.ok || !payload.code) throw new Error(payload.error ?? "Kode reset gagal dibuat.");
+      setMessage(`Kode reset ${payload.code} berhasil dibuat dan berlaku selama 10 menit.`);
+      await load();
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Kode reset gagal dibuat.");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div className="super-admin-shell">
+      <aside className={`super-admin-sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="super-sidebar-brand"><span><Aperture size={20} /></span><div><strong>SNAPORE</strong><small>Super admin</small></div><button type="button" onClick={() => setSidebarOpen(false)} aria-label="Tutup menu"><X size={18} /></button></div>
+        <nav className="super-sidebar-nav" aria-label="Super admin menu">
+          <span className="super-nav-label">Management</span>
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            return <button type="button" className={activeView === item.id && !(item.id === "payments" && selectedTenantId) ? "active" : ""} key={item.id} onClick={() => openView(item.id)}><Icon size={16} /><span>{item.label}</span>{item.id === "create-tenant" && <em>NEW</em>}</button>;
+          })}
+          <span className="super-nav-label tenant-label">Tenant workspace</span>
+          <div className="super-tenant-menu">
+            {data.tenants.map((tenant) => <button type="button" className={selectedTenantId === tenant.id ? "active" : ""} key={tenant.id} onClick={() => openTenantWorkspace(tenant.id)}><span>{tenant.name.slice(0, 1).toUpperCase()}</span><div><strong>{tenant.name}</strong><small>{tenant.counts.booths} booth · {tenant.counts.users} user</small></div><ChevronRight size={13} /></button>)}
+            {!loading && data.tenants.length === 0 && <small>Belum ada tenant.</small>}
+          </div>
+        </nav>
+        <div className="super-sidebar-profile"><div><span>{name.slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><small>Global access</small></div></div><form action="/api/auth/logout" method="post"><button type="submit" aria-label="Logout"><LogOut size={16} /></button></form></div>
+      </aside>
+
+      {sidebarOpen && <button className="super-sidebar-scrim" type="button" aria-label="Tutup menu" onClick={() => setSidebarOpen(false)} />}
+
+      <main className="super-admin-page">
+        <header className="super-admin-topbar">
+          <button className="super-menu-toggle" type="button" onClick={() => setSidebarOpen(true)} aria-label="Buka menu"><Menu size={19} /></button>
+          <div><span className="eyebrow"><ShieldCheck size={13} /> {copy.eyebrow}</span><h1>{selectedTenant && activeView === "payments" ? selectedTenant.name : copy.title}</h1><p>{selectedTenant && activeView === "payments" ? `Workspace pengaturan khusus tenant ${selectedTenant.name}.` : copy.description}</p></div>
+          <button className="secondary-button" type="button" onClick={() => void load()} disabled={loading}>{loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Refresh</button>
+        </header>
+
+        {(message || error) && <div className={`frame-feedback super-feedback ${error ? "error" : "success"}`}>{error ?? message}</div>}
+
+        {activeView === "overview" && <>
+          <section className="super-metrics">
+            <article><Store size={18} /><span>Tenants</span><strong>{data.tenants.length}</strong></article>
+            <article><Monitor size={18} /><span>Booths</span><strong>{data.booths.length}</strong></article>
+            <article><CircleDollarSign size={18} /><span>Gross sales</span><strong>{formatCurrency(totals.gross)}</strong></article>
+            <article><ShieldCheck size={18} /><span>Net profit</span><strong>{formatCurrency(totals.net)}</strong><small>Pajak {formatCurrency(totals.tax)}</small></article>
+          </section>
+          <section className="super-quick-grid">
+            <button type="button" onClick={() => openView("create-tenant")}><Plus size={20} /><div><strong>Tambah tenant</strong><span>Mulai workspace bisnis baru</span></div><ChevronRight size={16} /></button>
+            <button type="button" onClick={() => openView("users")}><Users size={20} /><div><strong>Tambah user</strong><span>Atur akses tenant dan role</span></div><ChevronRight size={16} /></button>
+            <button type="button" onClick={() => openView("booths")}><Monitor size={20} /><div><strong>Tambah booth</strong><span>Buat URL kiosk UUID baru</span></div><ChevronRight size={16} /></button>
+          </section>
+          <section className="super-section"><div className="section-heading"><div><h2>Tenant workspace</h2><p>Pilih tenant untuk membuka konfigurasi khusus.</p></div></div><div className="tenant-directory-grid">{data.tenants.map((tenant) => <button type="button" key={tenant.id} onClick={() => openTenantWorkspace(tenant.id)}><span>{tenant.status}</span><h3>{tenant.name}</h3><p>{tenant.counts.booths} booth · {tenant.counts.users} user · {tenant.counts.frames} frame</p><ChevronRight size={17} /></button>)}</div></section>
+        </>}
+
+        {activeView === "create-tenant" && <section className="super-single-form">
+          <form className="super-form-card" onSubmit={submitSimple("createTenant")}>
+            <div className="super-form-icon"><Building2 size={23} /></div><h2>Buat tenant baru</h2><p>Tenant memiliki user, booth, frame, pricing, pajak, serta konfigurasi payment yang terpisah.</p>
+            <label>Nama tenant<input name="name" required minLength={2} placeholder="Studio Jakarta" /></label>
+            <label>Slug unik<input name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="studio-jakarta" /></label>
+            <div className="form-split"><label>Pajak %<input name="taxRate" type="number" min="0" max="100" step="0.01" defaultValue="11" /></label><label>Biaya/cetak<input name="defaultPrintCost" type="number" min="0" defaultValue="5000" /></label></div>
+            <button className="primary-button" disabled={saving === "createTenant"}>{saving === "createTenant" ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Create tenant</button>
+          </form>
+        </section>}
+
+        {activeView === "tenants" && <section className="super-section tenant-section-first">
+          <div className="section-heading"><div><h2>{data.tenants.length} tenant aktif</h2><p>Setiap tenant memiliki menu pengaturan terpisah di sidebar.</p></div><button className="primary-button" type="button" onClick={() => openView("create-tenant")}><Plus size={14} /> Tambah tenant</button></div>
+          <div className="tenant-directory-grid expanded">{data.tenants.map((tenant) => <button type="button" key={tenant.id} onClick={() => openTenantWorkspace(tenant.id)}><span>{tenant.status}</span><h3>{tenant.name}</h3><code>{tenant.slug}</code><p>{tenant.counts.booths} booth · {tenant.counts.users} user · {tenant.counts.frames} frame</p><div>Open workspace <ChevronRight size={15} /></div></button>)}</div>
+        </section>}
+
+        {activeView === "users" && <div className="super-content-grid">
+          <form className="super-form-card" onSubmit={submitSimple("createUser")}>
+            <h2><Users size={18} /> Tambah user</h2>
+            <label>Tenant<select name="tenantId" defaultValue=""><option value="">Global / super admin</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label>
+            <div className="form-split"><label>Nama<input name="name" required /></label><label>Role<select name="role" defaultValue="ADMIN"><option>SUPER_ADMIN</option><option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option></select></label></div>
+            <label>Email<input name="email" type="email" required /></label><label>Password awal<input name="password" type="password" minLength={10} required /></label>
+            <button className="primary-button" disabled={saving === "createUser"}><Plus size={15} /> Create user</button>
+          </form>
+          <section className="super-directory-panel"><div className="section-heading"><div><h2>User directory</h2><p>{data.users.length} akun tersimpan</p></div></div><div className="user-directory">{data.users.map((user) => <article className={!user.active ? "inactive" : ""} key={user.id}><div><strong>{user.name}</strong><span>{user.email}</span><small>{user.tenantId ? data.tenants.find((tenant) => tenant.id === user.tenantId)?.name ?? "Tenant" : "Global account"}</small></div><em>{user.role}</em><button type="button" onClick={() => setEditingUser(user)} aria-label={`Edit ${user.name}`}><Pencil size={13} /> Edit</button></article>)}</div></section>
+        </div>}
+
+        {activeView === "booths" && <>
+          <section className="super-booth-create"><form className="super-form-card" onSubmit={submitSimple("createBooth")}><h2><Monitor size={18} /> Tambah booth</h2><label>Tenant<select name="tenantId" required defaultValue=""><option value="" disabled>Pilih tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label><div className="form-split"><label>Kode<input name="code" required placeholder="JKT-001" /></label><label>Nama<input name="name" required /></label></div><label>Lokasi<input name="location" /></label><button className="primary-button" disabled={saving === "createBooth"}><Plus size={15} /> Create booth</button></form></section>
+          <section className="super-section"><div className="section-heading"><div><h2>Booth & kiosk UUID</h2><p>Booth tanpa kombinasi layout dan frame otomatis masuk maintenance.</p></div></div><div className="booth-tenant-grid">{data.booths.map((booth) => {
+            const operational = booth.kioskEnabled && !booth.maintenanceMode && booth.resourceReady;
+            return <article className={!operational ? "booth-card-inactive" : ""} key={booth.id}>
+              <div className="booth-card-status"><span className="status-chip"><span className={`status-dot ${operational ? "online" : booth.maintenanceMode ? "warn" : "error"}`} /> {operational ? "AKTIF" : booth.maintenanceMode ? "MAINTENANCE" : "NONAKTIF"}</span><small>{booth.status}</small></div>
+              <h3>{booth.name}</h3><p>{booth.tenant} · {booth.code}</p>
+              {!operational && <div className="booth-readiness-warning">{booth.readinessReason ?? "Booth dinonaktifkan oleh admin."}</div>}
+              <div className="booth-layout-counts">Layout siap: {booth.layoutCounts.length ? booth.layoutCounts.join(" / ") : "belum ada"}</div>
+              <code>{booth.kioskUrl}</code>
+              <div className="booth-card-actions"><button className="secondary-button" type="button" onClick={() => void navigator.clipboard.writeText(`${window.location.origin}${booth.kioskUrl}`)}><Copy size={13} /> Copy link</button><button className={`booth-power-button ${booth.kioskEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `booth-${booth.id}`} onClick={() => void send({ action: "updateBoothStatus", boothId: booth.id, enabled: !booth.kioskEnabled }, `booth-${booth.id}`)}>{saving === `booth-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />} {booth.kioskEnabled ? "Nonaktifkan" : "Aktifkan"}</button></div>
+              <div>{booth.devices.map((device) => <small key={device.id}>{device.type}: {device.name}</small>)}</div>
+            </article>;
+          })}</div></section>
+        </>}
+
+        {activeView === "sessions" && <section className="super-section tenant-section-first">
+          <div className="section-heading">
+            <div><h2>Sessions per tenant</h2><p>{visibleSessions.length} dari {data.sessions.length} sesi · kode reset berlaku 10 menit dan hanya dapat dipakai sekali.</p></div>
+            <label className="tenant-filter">Tenant<select value={sessionTenantId} onChange={(event) => setSessionTenantId(event.target.value)}><option value="">Semua tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label>
+          </div>
+          <div className="session-recovery-list">
+            {visibleSessions.map((session) => <article className="session-recovery-card" key={session.id}>
+              <header>
+                <div><span>{session.tenant} · {session.boothCode}</span><h3>{session.publicCode}</h3><p>{session.booth} · {formatDateTime(session.startedAt)}</p></div>
+                <span className="status-chip"><span className={`status-dot ${session.status === "COMPLETED" ? "online" : ["CANCELLED", "EXPIRED", "FAILED"].includes(session.status) ? "error" : "warn"}`} /> {session.status}</span>
+              </header>
+              <div className="session-recovery-facts">
+                <span><small>Layout / frame</small><strong>{session.layout ?? "Belum dipilih"}{session.frame ? ` · ${session.frame}` : ""}</strong></span>
+                <span><small>Foto</small><strong>{session.photoCount}</strong></span>
+                <span><small>Payment</small><strong>{session.paymentStatus}</strong></span>
+                <span><small>Upload</small><strong>{session.uploadStatus ?? "Belum ada job"}</strong></span>
+                <span><small>Total</small><strong>{formatCurrency(session.total)}</strong></span>
+              </div>
+              <footer>
+                {session.activeReset ? <div className="active-reset-code"><span>Kode aktif sampai {formatDateTime(session.activeReset.expiresAt)}</span>{session.activeReset.code ? <strong>{session.activeReset.code}</strong> : <em>Kode aktif</em>}{session.activeReset.code ? <button type="button" onClick={() => void navigator.clipboard.writeText(session.activeReset?.code ?? "")} aria-label={`Salin kode reset ${session.publicCode}`}><Copy size={13} /></button> : null}</div> : <p>{session.resettable ? "Buat kode jika pengguna perlu mengulang foto tanpa membayar kembali." : "Reset tidak tersedia setelah sesi selesai atau job cetak dibuat."}</p>}
+                <button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode 6 digit"}</button>
+              </footer>
+            </article>)}
+            {!loading && visibleSessions.length === 0 ? <div className="tenant-workspace-empty"><Images size={25} /><strong>Belum ada sesi</strong><span>Tidak ada sesi pada tenant yang dipilih.</span></div> : null}
+          </div>
+        </section>}
+
+        {activeView === "payments" && <section className="super-section tenant-section-first">
+          <div className="section-heading"><div><h2>Tenant settings & Xendit QRIS</h2><p>Secret ditampilkan tersamarkan dan disimpan terenkripsi.</p></div><label className="tenant-filter">Tenant<select value={selectedTenantId ?? ""} onChange={(event) => setSelectedTenantId(event.target.value || null)}><option value="">Semua tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label></div>
+          <div className="tenant-setting-grid">
+            {visibleTenants.map((tenant) => <form className="tenant-setting-card" key={tenant.id} onSubmit={async (event) => {
+              event.preventDefault();
+              const values = formObject(event.currentTarget);
+              await send({ action: "updateTenant", tenantId: tenant.id, taxRate: values.taxRate, pricesIncludeTax: values.pricesIncludeTax === "on", defaultPrintCost: values.defaultPrintCost, paymentFeeRate: values.paymentFeeRate, paymentFeeFixed: values.paymentFeeFixed, xenditEnabled: values.xenditEnabled === "on", xenditEnvironment: values.xenditEnvironment, xenditApiKey: values.xenditApiKey || undefined, xenditWebhookToken: values.xenditWebhookToken || undefined }, `tenant-${tenant.id}`);
+            }}>
+              <header><div><span>{tenant.slug}</span><h3>{tenant.name}</h3></div><em>{tenant.counts.booths} booth · {tenant.counts.frames} frame</em></header>
+              <div className="tenant-finance-fields"><label>Pajak %<input name="taxRate" type="number" step="0.01" defaultValue={tenant.taxRate} /></label><label>Biaya per cetak<input name="defaultPrintCost" type="number" defaultValue={tenant.defaultPrintCost} /></label><label>Fee Xendit %<input name="paymentFeeRate" type="number" step="0.01" defaultValue={tenant.paymentFeeRate} /></label><label>Fee tetap<input name="paymentFeeFixed" type="number" defaultValue={tenant.paymentFeeFixed} /></label></div>
+              <div className="tenant-checks"><label><input name="pricesIncludeTax" type="checkbox" defaultChecked={tenant.pricesIncludeTax} /> Harga termasuk pajak</label><label><input name="xenditEnabled" type="checkbox" defaultChecked={tenant.payment.enabled} /> Aktifkan Xendit QRIS</label></div>
+              <label>Environment<select name="xenditEnvironment" defaultValue={tenant.payment.environment}><option value="TEST">Test</option><option value="LIVE">Live</option></select></label>
+              <div className="secret-input"><span><KeyRound size={13} /> API key: {tenant.payment.apiKeyMasked ?? "belum diisi"}</span><input name="xenditApiKey" type="password" placeholder="Isi hanya untuk mengganti key" autoComplete="new-password" /></div>
+              <div className="secret-input"><span>Webhook token: {tenant.payment.webhookTokenMasked ?? "belum diisi"}</span><input name="xenditWebhookToken" type="password" placeholder="Isi hanya untuk mengganti token" autoComplete="new-password" /></div>
+              <code className="webhook-url">Webhook: /api/payments/xendit/webhook</code><button className="primary-button" disabled={saving === `tenant-${tenant.id}`}><Settings2 size={15} /> Save settings</button>
+            </form>)}
+          </div>
+          <div className="tenant-frame-workspace">
+            <div className="section-heading"><div><h2><ImagePlus size={18} /> Frame tenant</h2><p>{selectedTenant ? `Upload hanya masuk ke ${selectedTenant.name} dan booth yang dipilih.` : "Pilih satu tenant untuk mengelola frame miliknya."}</p></div></div>
+            {selectedTenant
+              ? selectedTenantBooths.length > 0
+                ? <FrameManager key={selectedTenant.id} booths={selectedTenantBooths} />
+                : <div className="tenant-workspace-empty"><Monitor size={25} /><strong>Tenant belum memiliki booth</strong><span>Buat booth terlebih dahulu sebelum mengunggah frame.</span><button className="primary-button" type="button" onClick={() => openView("booths")}><Plus size={14} /> Tambah booth</button></div>
+              : <div className="tenant-workspace-empty"><Building2 size={25} /><strong>Pilih tenant</strong><span>Gunakan pilihan tenant di atas atau menu workspace pada sidebar.</span></div>}
+          </div>
+        </section>}
+
+        {activeView === "sales" && <section className="super-section tenant-section-first"><div className="section-heading"><div><h2>Sales by booth & device</h2><p>Gross − pajak − biaya cetak − fee pembayaran = laba bersih</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Tenant / Booth</th><th>Device</th><th>Order</th><th>Gross</th><th>Pajak</th><th>Cost + fee</th><th>Net profit</th></tr></thead><tbody>{data.sales.map((row, index) => <tr key={`${row.booth}-${row.device}-${index}`}><td><strong>{row.booth}</strong><small>{row.tenant} · {row.prints} cetak</small></td><td>{row.device}</td><td>{row.orders}</td><td>{formatCurrency(row.gross)}</td><td>{formatCurrency(row.tax)}</td><td>{formatCurrency(row.printCost + row.paymentFee)}</td><td><strong>{formatCurrency(row.netProfit)}</strong></td></tr>)}{data.sales.length === 0 && <tr><td colSpan={7}>Belum ada penjualan yang tercatat.</td></tr>}</tbody></table></div></section>}
+      </main>
+
+      {editingUser && <div className="user-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEditingUser(null); }}>
+        <section className="user-edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-user-title">
+          <header><div><span className="eyebrow"><Pencil size={13} /> User access</span><h2 id="edit-user-title">Edit user</h2><p>Perbarui identitas, tenant, role, status akun, atau password.</p></div><button type="button" onClick={() => setEditingUser(null)} disabled={Boolean(saving)} aria-label="Tutup edit user"><X size={18} /></button></header>
+          <form onSubmit={async (event) => {
+            event.preventDefault();
+            const values = formObject(event.currentTarget);
+            const ok = await send({ action: "updateUser", userId: editingUser.id, tenantId: values.tenantId || null, name: values.name, email: values.email, role: values.role, active: values.active === "on", password: values.password || undefined }, `user-${editingUser.id}`);
+            if (ok) setEditingUser(null);
+          }}>
+            <div className="form-split"><label>Nama<input name="name" required defaultValue={editingUser.name} /></label><label>Email<input name="email" type="email" required defaultValue={editingUser.email} /></label></div>
+            <div className="form-split"><label>Role<select name="role" defaultValue={editingUser.role}><option>SUPER_ADMIN</option><option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option></select></label><label>Tenant<select name="tenantId" defaultValue={editingUser.tenantId ?? ""}><option value="">Global / tanpa tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label></div>
+            <label>Password baru <small>Opsional, minimal 10 karakter</small><input name="password" type="password" minLength={10} autoComplete="new-password" placeholder="Kosongkan jika tidak diubah" /></label>
+            <label className="user-active-check"><input name="active" type="checkbox" defaultChecked={editingUser.active} /> Akun aktif dan dapat login</label>
+            <footer><button className="secondary-button" type="button" onClick={() => setEditingUser(null)} disabled={Boolean(saving)}>Cancel</button><button className="primary-button" disabled={saving === `user-${editingUser.id}`}>{saving === `user-${editingUser.id}` ? <LoaderCircle className="spin" size={15} /> : <Settings2 size={15} />} Save user</button></footer>
+          </form>
+        </section>
+      </div>}
+    </div>
+  );
+}
