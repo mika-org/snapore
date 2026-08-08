@@ -12,20 +12,25 @@ const loginSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = loginSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "Email atau password tidak valid." }, { status: 400 });
-  const user = await prisma.user.findUnique({ where: { email: parsed.data.email }, include: { tenant: true } });
-  if (!user?.active || !verifyPassword(parsed.data.password, user.passwordHash)) {
-    return NextResponse.json({ error: "Email atau password salah." }, { status: 401 });
-  }
-  if (user.tenant && user.tenant.status !== "ACTIVE") {
-    return NextResponse.json({ error: "Tenant sedang dinonaktifkan." }, { status: 403 });
-  }
+  try {
+    const parsed = loginSchema.safeParse(await request.json().catch(() => null));
+    if (!parsed.success) return NextResponse.json({ error: "Email atau password tidak valid." }, { status: 400 });
+    const user = await prisma.user.findUnique({ where: { email: parsed.data.email }, include: { tenant: true } });
+    if (!user?.active || !verifyPassword(parsed.data.password, user.passwordHash)) {
+      return NextResponse.json({ error: "Email atau password salah." }, { status: 401 });
+    }
+    if (user.tenant && user.tenant.status !== "ACTIVE") {
+      return NextResponse.json({ error: "Tenant sedang dinonaktifkan." }, { status: 403 });
+    }
 
-  const response = NextResponse.json({
-    user: { id: user.id, name: user.name, role: user.role, tenantId: user.tenantId },
-    redirectTo: user.role === "SUPER_ADMIN" ? "/super-admin" : "/admin",
-  });
-  response.cookies.set(SESSION_COOKIE, createSessionToken(user.id), sessionCookieOptions);
-  return response;
+    const response = NextResponse.json({
+      user: { id: user.id, name: user.name, role: user.role, tenantId: user.tenantId },
+      redirectTo: user.role === "SUPER_ADMIN" ? "/super-admin" : "/admin",
+    });
+    response.cookies.set(SESSION_COOKIE, createSessionToken(user.id), sessionCookieOptions);
+    return response;
+  } catch (error) {
+    console.error("Login request failed.", error);
+    return NextResponse.json({ error: "Layanan autentikasi sedang bermasalah. Silakan coba lagi." }, { status: 500 });
+  }
 }

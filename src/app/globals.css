@@ -54,6 +54,7 @@ button { color: inherit; }
 .nav-item { display: flex; align-items: center; gap: 12px; padding: 11px 12px; color: #aaa; border-radius: 12px; font-size: 13px; font-weight: 650; transition: .18s ease; }
 .nav-item:hover { color: #fff; background: #252525; }
 .nav-item.active { color: #181818; background: var(--mint); }
+#frames, #devices, #pricing, #settings { scroll-margin-top: 24px; }
 .sidebar-spacer { flex: 1; }
 .agent-card { margin-bottom: 12px; padding: 14px; background: #242424; border: 1px solid #373737; border-radius: 14px; }
 .agent-card .status-line { display: flex; align-items: center; gap: 7px; color: #aaa; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }

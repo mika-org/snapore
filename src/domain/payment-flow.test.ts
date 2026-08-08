@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { paymentAllowsSessionStart } from "./payment-flow";
 
-describe("QRIS payment gate", () => {
-  it("hanya membuka sesi setelah pembayaran berstatus PAID", () => {
+describe("payment gate", () => {
+  it("membuka sesi untuk pembayaran lunas atau yang memang tidak diwajibkan", () => {
     expect(paymentAllowsSessionStart("PAID")).toBe(true);
-    for (const status of [undefined, null, "IDLE", "PENDING", "EXPIRED", "FAILED", "NOT_REQUIRED"]) {
+    expect(paymentAllowsSessionStart("NOT_REQUIRED")).toBe(true);
+    for (const status of [undefined, null, "IDLE", "PENDING", "EXPIRED", "FAILED"]) {
       expect(paymentAllowsSessionStart(status)).toBe(false);
     }
   });

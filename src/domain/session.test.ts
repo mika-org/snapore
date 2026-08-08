@@ -18,6 +18,12 @@ describe("kiosk session state machine", () => {
     expect(() => transitionSession("IDLE", "CONFIRM_PRINT")).toThrow(/tidak valid/);
   });
 
+  it("mendukung bypass pembayaran langsung ke pilih frame", () => {
+    expect(transitionSession("IDLE", "BYPASS_TO_FRAME")).toBe("FRAME");
+    expect(transitionSession("PAYMENT", "BYPASS_TO_FRAME")).toBe("FRAME");
+    expect(transitionSession("LAYOUT", "BYPASS_TO_FRAME")).toBe("FRAME");
+  });
+
   it.each([2, 4, 6, 8])("retake satu slot pada grid %i kembali ke review", () => {
     expect(transitionSession("REVIEW", "RETAKE_PHOTO")).toBe("CAPTURE");
     expect(transitionSession("CAPTURE", "RETAKE_COMPLETE")).toBe("REVIEW");

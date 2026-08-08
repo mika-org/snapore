@@ -13,6 +13,7 @@ export default async function BoothKioskPage({ params }: { params: Promise<{ boo
     where: { id: boothId, tenant: { status: "ACTIVE" } },
     include: {
       tenant: { include: { paymentConfig: { select: { enabled: true, apiKeyEncrypted: true } } } },
+      setting: { select: { paymentMode: true } },
       pricingRules: { where: { active: true }, orderBy: { createdAt: "desc" }, take: 1 },
     },
   });
@@ -29,7 +30,7 @@ export default async function BoothKioskPage({ params }: { params: Promise<{ boo
     tenantName: booth.tenant.name,
     basePrice: pricing ? Number(pricing.basePrice) : 50_000,
     additionalCopyPrice: pricing ? Number(pricing.additionalCopy) : 20_000,
-    paymentEnabled: Boolean(booth.tenant.paymentConfig?.enabled && booth.tenant.paymentConfig.apiKeyEncrypted),
+    paymentEnabled: booth.setting?.paymentMode === "ONLINE_PROVIDER",
     taxRate: Number(booth.tenant.taxRate),
     pricesIncludeTax: booth.tenant.pricesIncludeTax,
     printCostPerCopy: Number(booth.tenant.defaultPrintCost),

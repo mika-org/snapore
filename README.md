@@ -9,7 +9,7 @@ Repository sekarang berisi vertical slice Snapore yang mencakup:
 - Next.js App Router, React, TypeScript, dan responsive PWA shell;
 - Prisma ORM 7 dengan schema PostgreSQL, initial migration, dan seed data;
 - command center dashboard, session archive, CMS/frame settings, dan kiosk flow;
-- capture camera melalui `getUserMedia()` dengan simulator fallback;
+- capture kamera laptop/webcam asli melalui `getUserMedia()` dengan penanganan izin dan retry;
 - penyimpanan capture ke local directory melalui device agent;
 - fallback IndexedDB ketika device agent tidak tersedia;
 - browser image composition untuk layout grid 2, 4, 6, dan 8;
@@ -21,12 +21,12 @@ Repository sekarang berisi vertical slice Snapore yang mencakup:
 - integrasi Xendit Payments API untuk QRIS one-time-use, polling status, webhook terverifikasi, dan idempotensi webhook;
 - print job dan upload job terpisah yang dipicu saat konfirmasi cetak;
 - local persistent agent queue, atomic file write, SHA-256 checksum, dan background retry;
-- mock DNP printer untuk development serta kontrak adapter DSLR/printer nyata;
+- OS print spooler sebagai jalur default serta mock printer yang hanya aktif bila dipilih eksplisit untuk development;
 - server sync endpoint, protected gallery token, dan QR result setelah sinkronisasi;
 - fallback sinkronisasi langsung dari browser dengan retry otomatis ketika device agent tidak aktif, sehingga QR galeri tetap muncul setelah server menerima file;
 - Docker Compose PostgreSQL, unit tests, lint, typecheck, dan production build scripts.
 
-Integrasi printer/DSLR fisik masih membutuhkan model perangkat, driver vendor, dan hardware acceptance test. `OS_SPOOLER` sengaja gagal secara aman sampai printer nyata dikonfigurasi; development memakai mode `mock`.
+Integrasi printer/DSLR fisik masih membutuhkan model perangkat, driver vendor, dan hardware acceptance test. `OS_SPOOLER` adalah mode default dan sengaja gagal secara aman sampai printer nyata dikonfigurasi; mode `mock` hanya untuk pengujian yang diaktifkan secara eksplisit.
 
 ## Menjalankan aplikasi lokal
 

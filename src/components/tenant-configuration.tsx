@@ -202,7 +202,7 @@ function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothC
           <label className="config-field"><span>Countdown foto (detik)</span><input name="countdownSeconds" type="number" min={1} max={30} defaultValue={booth.setting?.countdownSeconds ?? 3} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Maksimum retake</span><input name="maxRetakes" type="number" min={0} max={20} defaultValue={booth.setting?.maxRetakes ?? 1} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Idle timeout (detik)</span><input name="idleTimeoutSeconds" type="number" min={30} max={3600} defaultValue={booth.setting?.idleTimeoutSeconds ?? 90} required disabled={!canEdit} /></label>
-          <label className="config-field"><span>Mode pembayaran</span><select name="paymentMode" defaultValue={booth.setting?.paymentMode ?? "DISABLED"} disabled={!canEdit}><option value="DISABLED">Disabled</option><option value="CASH">Cash</option><option value="MANUAL">Manual</option><option value="ONLINE_PROVIDER">Xendit QRIS</option></select></label>
+          <label className="config-field"><span>Mode pembayaran</span><select name="paymentMode" defaultValue={booth.setting?.paymentMode ?? "DISABLED"} disabled={!canEdit}><option value="DISABLED">Disabled</option><option value="CASH" disabled>Cash (belum tersedia)</option><option value="MANUAL" disabled>Manual (belum tersedia)</option><option value="ONLINE_PROVIDER">Xendit QRIS</option></select></label>
           <label className="config-field"><span>Retensi belum tercetak (jam)</span><input name="unprintedRetentionHours" type="number" min={1} max={720} defaultValue={booth.setting?.unprintedRetentionHours ?? 24} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Retensi tersinkron (hari)</span><input name="syncedRetentionDays" type="number" min={1} max={365} defaultValue={booth.setting?.syncedRetentionDays ?? 7} required disabled={!canEdit} /></label>
           <button className="primary-button config-save" type="submit" disabled={!canEdit || saving !== null}>{saving === "settings" ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save settings</button>
@@ -240,7 +240,25 @@ export function TenantConfiguration({ booths, layouts, payment, canEdit }: { boo
       </div>
       {booth
         ? <BoothConfiguration key={booth.id} booth={booth} booths={booths} layouts={layouts} payment={payment} canEdit={canEdit} onBoothChange={setBoothId} />
-        : <div className="cms-grid"><div><FrameManager booths={[]} canEdit={false} /></div><aside className="settings-stack"><div className="inline-empty">Tenant belum memiliki booth. Konfigurasi tersedia setelah Super Admin membuat booth.</div></aside></div>}
+        : <div className="cms-grid">
+            <div>
+              <FrameManager booths={[]} canEdit={false} />
+              <section id="devices">
+                <div className="section-heading"><div><h2>Devices</h2><p>Perangkat kamera dan printer tenant</p></div></div>
+                <article className="panel"><div className="panel-body"><div className="inline-empty">Belum ada perangkat karena tenant belum memiliki booth. Buat booth dari menu Super Admin → Booth & kiosk.</div></div></article>
+              </section>
+            </div>
+            <aside className="settings-stack">
+              <section className="settings-card" id="pricing">
+                <h3><CircleDollarSign size={17} /> Pricing</h3>
+                <div className="inline-empty">Pricing dapat diatur setelah Super Admin membuat booth untuk tenant ini.</div>
+              </section>
+              <section className="settings-card" id="settings">
+                <h3><Clock3 size={17} /> Booth settings</h3>
+                <div className="inline-empty">Countdown, retake, pembayaran, dan retensi tersedia setelah booth dibuat.</div>
+              </section>
+            </aside>
+          </div>}
     </>
   );
 }
