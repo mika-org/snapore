@@ -9,6 +9,7 @@ Repository sekarang berisi vertical slice Snapore yang mencakup:
 - Next.js App Router, React, TypeScript, dan responsive PWA shell;
 - Prisma ORM 7 dengan schema PostgreSQL, initial migration, dan seed data;
 - command center dashboard, session archive, CMS/frame settings, dan kiosk flow;
+- idle screen interaktif dengan animasi photostrip, pose, flash, headline, CTA pulse, serta dukungan `prefers-reduced-motion`;
 - capture camera melalui `getUserMedia()` dengan simulator fallback;
 - penyimpanan capture ke local directory melalui device agent;
 - fallback IndexedDB ketika device agent tidak tersedia;
@@ -18,7 +19,9 @@ Repository sekarang berisi vertical slice Snapore yang mencakup:
 - admin tenant dapat menambahkan satu set frame baru melalui upload PNG Grid 2/4/6/8 untuk booth tertentu; metadata versi, path, checksum, dan status publikasi disimpan ke PostgreSQL;
 - multi-tenant persistence dengan UUID untuk seluruh primary ID, user berbasis role, booth UUID URL, dan isolasi frame per tenant/booth;
 - super admin console untuk membuat tenant, user, booth, mengatur pajak/biaya, menyimpan secret Xendit terenkripsi, serta melihat penjualan dan laba bersih per booth/device;
-- integrasi Xendit Payments API untuk QRIS one-time-use, polling status, webhook terverifikasi, dan idempotensi webhook;
+- kontrol aktif/nonaktif booth serta maintenance otomatis ketika layout dan frame database yang kompatibel belum tersedia;
+- integrasi Xendit Payments API untuk QRIS one-time-use, polling status, webhook terverifikasi, idempotensi webhook, dan payment gate yang hanya menerima status `PAID`;
+- reset sesi terbayar melalui kode 6 digit sekali pakai dari Super Admin tanpa meminta pelanggan membayar ulang;
 - print job dan upload job terpisah yang dipicu saat konfirmasi cetak;
 - local persistent agent queue, atomic file write, SHA-256 checksum, dan background retry;
 - mock DNP printer untuk development serta kontrak adapter DSLR/printer nyata;
@@ -68,7 +71,8 @@ Akun development awal dibuat oleh seed menggunakan `SUPER_ADMIN_EMAIL` dan `SUPE
 - User dapat diedit oleh Super Admin, termasuk nama, email, tenant, role, status aktif, dan reset password opsional. Workspace tenant memuat Xendit/pajak serta upload frame yang hanya dapat diarahkan ke booth tenant tersebut.
 - API key dan webhook token Xendit dienkripsi AES-256-GCM menggunakan `APP_ENCRYPTION_KEY`; UI hanya mengembalikan empat karakter terakhir.
 - QRIS dibuat melalui `POST /api/payments/qris` menggunakan Xendit Payment Requests API. Webhook ditangani di `/api/payments/xendit/webhook` dengan verifikasi `x-callback-token` dan deduplikasi `webhook-id`.
-- QRIS muncul setelah layar idle disentuh dengan window pembayaran 5 menit. Setelah pembayaran berhasil, timer sesi 15 menit terus berjalan dari pemilihan layout sampai hasil selesai.
+- QRIS muncul setelah layar idle disentuh dengan window pembayaran 5 menit. Kiosk tidak dapat melewati tahap pembayaran sebelum Xendit mengembalikan status `PAID`; `PENDING`, `EXPIRED`, `NOT_REQUIRED`, atau konfigurasi Xendit kosong tidak membuka sesi.
+- Setelah pembayaran berhasil, timer sesi 15 menit terus berjalan dari pemilihan layout sampai hasil selesai.
 - Untuk harga termasuk pajak: `pajak = gross - gross / (1 + taxRate)`. Laba bersih per order: `gross - pajak - biaya cetak - fee payment`.
 - Device agent untuk setiap booth harus memakai `SNAPORE_BOOTH_CODE` yang sama dengan kode booth di database agar hasil cetak tercatat pada perangkat dan booth yang benar.
 
@@ -190,93 +194,93 @@ flowchart LR
 - Pada tablet, browser/PWA menyimpan file di OPFS/IndexedDB jika tidak memiliki akses ke directory biasa. Untuk print, tablet berkomunikasi dengan print host/local agent di jaringan lokal.
 - Istilah **otomatis connect** berarti auto-discovery, pairing awal, penyimpanan preferred device, health check, dan auto-reconnect. Ini tidak berarti sistem dapat melewati instalasi driver vendor atau izin OS.
 
-## 5. Alur pelanggan/kiosk
+## 5. Alur pelanggan/kiosk yang berlaku
 
-Alur dari sketsa harus diterapkan sebagai state machine yang eksplisit, bukan kumpulan boolean UI.
+Flow kiosk diimplementasikan sebagai state machine `IDLE -> PAYMENT -> LAYOUT -> FRAME -> CAPTURE -> REVIEW -> CHECKOUT -> PRINTING -> DONE`. Pembayaran berada sebelum pengambilan foto dan bersifat fail-closed.
 
 ```mermaid
 flowchart TD
-    I["Home / idle video"] -->|"Sentuh untuk mulai"| L["Pilih layout / grid 2, 4, atau 6"]
-    L --> R["Pilih frame aktif"]
-    R --> C["Countdown"]
-    C --> T["Ambil foto ke storage lokal"]
-    T -->|"Slot belum lengkap"| C
-    T -->|"Semua slot lengkap"| S["Pilih foto / retake sesuai aturan"]
-    S --> D["Compose desain + frame secara lokal"]
-    D --> V["Preview hasil final"]
-    V --> X["Pilih jumlah cetak / tambah cetak"]
-    X --> M{"Payment aktif?"}
-    M -->|"Ya"| Y["Proses dan verifikasi pembayaran"]
-    M -->|"Tidak"| J["Buat print job"]
-    Y -->|"Berhasil"| J
-    Y -->|"Gagal/timeout"| X
-    J --> U["Enqueue upload ke server"]
-    J --> P["Cetak dari file lokal"]
-    U -->|"Server online"| Q["Tampilkan QR galeri/download"]
-    U -->|"Server offline"| W["Retry di background; QR pending"]
-    P --> H["Halaman selesai"]
-    Q --> H
+    I["IDLE<br/>Animasi, voice-over, status booth"] --> B{"Booth aktif dan<br/>layout-frame siap?"}
+    B -->|"Tidak"| M["MAINTENANCE<br/>Sesi baru dikunci"]
+    B -->|"Ya, layar disentuh"| Q["Buat QRIS Xendit<br/>timer 5 menit"]
+    Q -->|"Xendit/API key belum siap"| E["Tetap di PAYMENT<br/>tampilkan error konfigurasi"]
+    Q -->|"PENDING"| P["Tampilkan QR dan polling status"]
+    P -->|"Belum dibayar"| P
+    P -->|"EXPIRED"| X["Buat QRIS baru atau kembali ke idle"]
+    P -->|"PAID"| T["Mulai timer sesi 15 menit"]
+    T --> L["Pilih layout database<br/>Grid 2 / 4 / 6 / 8"]
+    L --> F["Pilih frame yang kompatibel"]
+    F --> C["Countdown 3 · 2 · 1 + voice"]
+    C --> S["Capture ke directory lokal / IndexedDB"]
+    S -->|"Slot belum lengkap"| C
+    S -->|"Semua slot lengkap"| R["Review setiap slot"]
+    R -->|"Retake satu slot"| C
+    R -->|"Edit drag / zoom / rotate / filter"| R
+    R -->|"Setujui"| D["Compose frame secara lokal"]
+    D --> O["Preview final dan konfirmasi cetak"]
+    O --> V{"Status pembayaran<br/>masih PAID?"}
+    V -->|"Tidak"| E
+    V -->|"Ya"| J["Buat print job dan upload job"]
+    J --> PR["Cetak dari file lokal"]
+    J --> U["Sinkronisasi server"]
+    U -->|"Berhasil"| G["Tampilkan QR galeri"]
+    U -->|"Offline/gagal sementara"| W["Retry background<br/>QR menunggu sinkronisasi"]
+    PR --> H["DONE"]
+    G --> H
     W --> H
-    H -->|"Timeout / selesai"| I
+    H -->|"Selesai / timeout"| I
 ```
 
 ### Detail setiap tahap
 
-#### A. Home / idle
+#### A. IDLE dan kesiapan booth
 
-- Menampilkan image/video idle dari CMS.
-- Tombol atau seluruh layar dapat disentuh untuk mulai.
-- Menampilkan indikator ringkas jika kamera/printer bermasalah sebelum sesi dimulai.
-- Maintenance mode mengunci kiosk dan menampilkan pesan yang diatur admin.
+- Idle menampilkan animasi photostrip, pose bergantian, flash, headline bergerak, CTA pulse, dan voice-over perempuan Indonesia.
+- `prefers-reduced-motion` menghentikan animasi berulang untuk aksesibilitas.
+- Sebelum sesi dimulai, server memeriksa status tenant, `kioskEnabled`, maintenance, layout aktif/published, dan frame tenant/booth yang kompatibel.
+- Booth tanpa kombinasi layout-frame yang valid otomatis masuk maintenance. Admin tenant dan Super Admin dapat mengaktifkan atau menonaktifkan booth.
 
-#### B. Pilih layout dan frame
+#### B. PAYMENT — QRIS wajib
 
-- Minimal mendukung grid 2, grid 4, dan grid 6.
-- Layout menentukan jumlah slot, ukuran canvas, posisi slot, aspect ratio, rotation, crop mode, z-index, dan safe area.
-- Frame adalah PNG/WebP transparan beresolusi sama dengan canvas output.
-- Asset bawaan tersedia sebagai PNG transparan 1200×1800 untuk setiap tema dan grid di `public/frames/`; nama frame dicetak langsung pada overlay.
-- Admin dapat mengaktifkan/menonaktifkan dan mengurutkan layout/frame.
-- Filter daftar frame berdasarkan ukuran kertas, orientasi, booth, campaign, dan masa aktif.
+- Sentuhan pada idle membuat QRIS Xendit sekali pakai dan memulai countdown pembayaran 5 menit.
+- Kiosk tetap berada pada halaman pembayaran selama status `PENDING` dan melakukan polling selain menerima webhook.
+- Hanya status `PAID` yang menjalankan transisi `PAYMENT_COMPLETE`; `NOT_REQUIRED`, `PENDING`, `FAILED`, `EXPIRED`, dan konfigurasi kosong tidak dapat membuka sesi.
+- Jika Xendit belum aktif atau API key tenant belum disimpan, UI menampilkan error konfigurasi dan tidak membuat sesi gratis.
+- Setelah `PAID`, timer sesi 15 menit dimulai dan terus berjalan sampai `DONE` atau habis.
 
-#### C. Countdown dan capture
+#### C. Pilih layout dan frame
 
-- Countdown dapat diatur, default 3 detik per foto.
-- Berikan flash/sound cue yang dapat diaktifkan/nonaktifkan.
-- Live preview mendukung mirror untuk kamera depan tanpa salah membalik file output.
-- Setelah capture, simpan file original ke local directory terlebih dahulu.
-- Capture berikutnya tidak boleh menunggu upload.
-- Retake dapat dibatasi jumlahnya dari CMS.
-- Jika kamera terputus, pause state dengan opsi reconnect; jangan menghapus sesi.
+- Layout yang tersedia adalah Grid 2, 4, 6, dan 8 yang aktif, memiliki versi published, serta mempunyai frame kompatibel di PostgreSQL.
+- Kiosk tidak menggunakan frame dummy ketika katalog database kosong atau gagal dimuat.
+- Frame tenant-global atau frame khusus booth diperbolehkan; frame milik booth/tenant lain ditolak saat validasi checkout.
 
-#### D. Pilih foto dan compose
+#### D. Countdown dan capture lokal
 
-- Pengguna memilih hasil foto untuk setiap slot jika jumlah capture melebihi jumlah slot.
-- Setiap slot pada grid 2, 4, atau 6 dapat diedit atau di-retake secara individual tanpa mengulang seluruh sesi.
-- Edit mendukung drag satu jari/mouse, pinch zoom dua jari, twist dua jari untuk rotasi bebas, rotate button, mirror, brightness, dan look/filter; hasil disimpan sebagai revisi lokal baru.
-- Retake menjalankan countdown untuk slot terpilih, mengganti hanya foto aktif pada slot tersebut, dan mempertahankan revisi lama secara lokal sampai retention policy membersihkannya.
-- Composer melakukan crop/fit/rotate sesuai layout, lalu menambahkan overlay frame.
-- Hasil composite final beresolusi siap cetak dan dibuat secara lokal.
-- Simpan original, thumbnail, preview, composite print-ready, serta metadata/checksum.
-- Rendering server boleh dibuat ulang untuk validasi, tetapi hasil cetak lokal tidak boleh bergantung pada server.
+- Countdown default tiga detik disertai cue suara `Tiga`, `Dua`, `Satu`, dan `Senyum`.
+- Hasil capture disimpan terlebih dahulu ke directory local device agent; IndexedDB menjadi fallback browser.
+- Tidak ada upload foto pada tahap capture atau review.
+- Grid berulang sampai seluruh 2/4/6/8 slot terisi.
 
-#### E. Preview, jumlah cetak, dan pembayaran
+#### E. Review, retake, dan edit
 
-- Tampilkan preview final sebelum cetak.
-- Pelanggan dapat menambah jumlah copy sesuai batas konfigurasi.
-- Total = harga dasar paket + harga tambahan copy, mengikuti pricing rule aktif.
-- Payment bersifat configurable dan memakai provider interface; jangan mengunci implementasi hanya ke satu gateway.
-- Sediakan mode `disabled`, `cash/manual confirmation`, dan `online provider`.
-- Print job hanya boleh dibuat setelah status pembayaran valid, kecuali payment dinonaktifkan.
+- Setiap slot dapat di-retake secara individual tanpa mengulang slot lain atau pembayaran.
+- Editor mendukung drag satu jari/mouse, pinch zoom, twist dua jari, rotate button, mirror, brightness, dan filter.
+- Hasil edit disimpan sebagai revisi lokal baru, kemudian composite print-ready dibuat secara lokal bersama overlay frame PNG.
+- Jika terjadi kendala sebelum print, Super Admin dapat membuat kode reset 6 digit sekali pakai dengan masa berlaku 10 menit. Kode mengulang flow dari pemilihan layout menggunakan sesi yang sudah dibayar.
 
-#### F. Upload, print, QR, dan selesai
+#### F. Checkout, print, dan sinkronisasi
 
-- Saat print job dibuat, lakukan dua proses independen: enqueue upload dan enqueue print.
-- Print membaca composite dari local directory, bukan men-download ulang dari server.
-- Kegagalan upload tidak membatalkan print yang sudah sah.
-- Upload session harus idempotent berdasarkan `sessionId`, `assetId`, dan checksum.
-- QR galeri/download baru aktif setelah server menyimpan asset dan mengembalikan token/link publik.
-- Jika offline, UI boleh menampilkan `QR sedang diproses`; queue tetap retry setelah sesi selesai.
-- Setelah selesai atau timeout, reset UI ke idle tanpa menghapus queue/background job.
+- Preview final MVP menampilkan satu copy, harga paket, pajak, dan total yang sudah dibayar. API/order sudah menyimpan biaya cetak, fee payment, serta laba bersih untuk laporan admin.
+- Model order mendukung copy tambahan, tetapi kontrol jumlah copy pada kiosk belum diaktifkan pada UI MVP.
+- Sebelum membuat job, server memvalidasi ulang bahwa pembayaran sesi masih `PAID` dan layout-frame masih valid.
+- Konfirmasi print membuat print job serta upload job terpisah dan idempotent.
+- Print selalu membaca composite lokal. Upload yang gagal tidak membatalkan print yang sah dan masuk retry queue.
+- QR galeri baru ditampilkan setelah server berhasil menerima asset; selama belum berhasil UI menampilkan status sinkronisasi/menunggu.
+
+#### G. DONE dan reset
+
+- Halaman selesai menampilkan status cetak dan QR galeri ketika tersedia.
+- Setelah selesai atau timer sesi habis, UI kembali ke idle tanpa menghapus print/upload queue yang masih berjalan.
 
 ## 6. State machine sesi dan job
 
@@ -291,6 +295,8 @@ Terminal tambahan: `CANCELLED`, `EXPIRED`, `FAILED`. Session terminal tidak otom
 ### Payment status
 
 `NOT_REQUIRED | PENDING | PAID | FAILED | EXPIRED | REFUNDED`
+
+Untuk flow kiosk QRIS saat ini, hanya `PAID` yang dapat membuka sesi atau membuat print job. `NOT_REQUIRED` dipertahankan pada schema untuk kompatibilitas histori/mode lain, tetapi tidak diterima oleh payment gate kiosk.
 
 ### Upload job status
 
@@ -601,8 +607,8 @@ Jika belum ada keputusan lain dari pemilik project, gunakan asumsi awal berikut 
 - local agent store: SQLite/persistent embedded database;
 - server assets: S3-compatible object storage;
 - output foto awal: 4x6 inch, 300 DPI, tetap configurable;
-- grid awal: 2, 4, dan 6;
-- payment awal: disabled/manual dengan provider interface sudah disiapkan;
+- grid aktif: 2, 4, 6, dan 8;
+- payment kiosk: QRIS Xendit wajib dan fail-closed; API key serta webhook token dikelola per tenant;
 - upload berjalan asynchronous ketika print job dibuat dan tidak memblokir print lokal;
 - QR hanya aktif setelah sinkronisasi server berhasil;
 - satu booth untuk pilot, tetapi semua data utama memiliki `boothId`;
@@ -639,16 +645,6 @@ Setiap fase harus memiliki demo, test, migration/rollback plan, serta definition
 
 ---
 
-## Instruksi penutup untuk AI coding agent
+## Instruksi lanjutan untuk AI coding agent
 
-Jangan mulai membuat aplikasi hanya berdasarkan kata-kata "buat sistem" yang ada di dalam dokumen ini. README ini adalah spesifikasi target. Pada respons pertama setelah menerima prompt ini, keluarkan hanya:
-
-1. ringkasan pemahaman;
-2. risiko dan batasan hardware;
-3. proposal arsitektur dan struktur repository;
-4. ERD konseptual;
-5. state machine dan kontrak adapter;
-6. fase pengerjaan beserta acceptance test;
-7. daftar singkat keputusan pemilik project yang masih diperlukan.
-
-Setelah itu berhenti dan tunggu perintah eksplisit **"mulai implementasi"**.
+Repository sudah berada pada fase implementasi. Setiap perubahan lanjutan harus mempertahankan state machine dan payment gate pada bagian 5, membaca data tenant/booth dari PostgreSQL, menjaga local-first capture, serta menjalankan typecheck, lint, test, dan production build sebelum dinyatakan selesai. Integrasi hardware nyata tetap wajib mengikuti driver/SDK vendor dan hardware acceptance test.
