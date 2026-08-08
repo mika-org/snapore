@@ -1,7 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 
-const PRISMA_SCHEMA_REVISION = "20260804-session-reset-codes";
+const PRISMA_SCHEMA_REVISION = "20260805-schema-aware-adapter";
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient; prismaSchemaRevision?: string };
 
 const connectionString = process.env.DATABASE_URL;
@@ -10,7 +10,8 @@ if (!connectionString) {
   throw new Error("DATABASE_URL belum dikonfigurasi.");
 }
 
-const adapter = new PrismaPg({ connectionString });
+const databaseSchema = new URL(connectionString).searchParams.get("schema") || undefined;
+const adapter = new PrismaPg({ connectionString }, { schema: databaseSchema });
 
 export const prisma =
   (globalForPrisma.prismaSchemaRevision === PRISMA_SCHEMA_REVISION ? globalForPrisma.prisma : undefined) ??

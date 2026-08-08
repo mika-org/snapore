@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient, LayoutKind, PrinterKind, CameraKind, DeviceType, DeviceStatus, BoothStatus, UserRole } from "../src/generated/prisma/client";
+import { PrismaClient, LayoutKind, PrinterKind, CameraKind, DeviceType, DeviceStatus, BoothStatus, PaymentMode, UserRole } from "../src/generated/prisma/client";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -10,7 +10,8 @@ const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) throw new Error("DATABASE_URL is required");
 
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+const databaseSchema = new URL(connectionString).searchParams.get("schema") || undefined;
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }, { schema: databaseSchema }) });
 
 function createSlots(count: 2 | 4 | 6 | 8) {
   const columns = count === 2 ? 1 : 2;
@@ -56,58 +57,72 @@ async function main() {
 
   const superAdminEmail = process.env.SUPER_ADMIN_EMAIL ?? "superadmin@snapore.local";
   const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD ?? "Snapore@2026!";
+  const adminPassword = process.env.ADMIN_PASSWORD ?? "Snapore#Admin73";
+  const resetSeedPasswords = process.env.SNAPORE_RESET_SEED_PASSWORDS === "true";
   const admin = await prisma.user.upsert({
     where: { email: superAdminEmail },
-    update: { name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, tenantId: null, passwordHash: hashPassword(superAdminPassword), active: true },
+    update: { name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, tenantId: null, active: true, ...(resetSeedPasswords ? { passwordHash: hashPassword(superAdminPassword) } : {}) },
     create: { email: superAdminEmail, name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, passwordHash: hashPassword(superAdminPassword) },
   });
 
   await prisma.user.upsert({
     where: { email: "admin@snapore.local" },
-    update: { tenantId: tenant.id, role: UserRole.ADMIN, passwordHash: hashPassword(superAdminPassword), active: true },
-    create: { tenantId: tenant.id, email: "admin@snapore.local", name: "Snapore Tenant Admin", role: UserRole.ADMIN, passwordHash: hashPassword(superAdminPassword) },
+    update: { tenantId: tenant.id, name: "Snapore Tenant Admin", role: UserRole.ADMIN, active: true, ...(resetSeedPasswords ? { passwordHash: hashPassword(adminPassword) } : {}) },
+    create: { tenantId: tenant.id, email: "admin@snapore.local", name: "Snapore Tenant Admin", role: UserRole.ADMIN, passwordHash: hashPassword(adminPassword) },
   });
 
   const booth = await prisma.booth.upsert({
-    where: { code: "BKK-001" },
-    update: { tenantId: tenant.id },
+    where: { code: "LOCAL-001" },
+    update: {
+      tenantId: tenant.id,
+      name: "Snapore Laptop Booth",
+      location: "Laptop lokal",
+      timezone: "Asia/Jakarta",
+      status: BoothStatus.OFFLINE,
+      setting: {
+        upsert: {
+          create: { countdownSeconds: 3, maxRetakes: 1, idleTimeoutSeconds: 90, paymentMode: PaymentMode.DISABLED },
+          update: { paymentMode: PaymentMode.DISABLED },
+        },
+      },
+    },
     create: {
       tenantId: tenant.id,
-      code: "BKK-001",
-      name: "Snapore Central Booth",
-      location: "Bangkok",
-      timezone: "Asia/Bangkok",
-      status: BoothStatus.ONLINE,
-      setting: { create: { countdownSeconds: 3, maxRetakes: 1, idleTimeoutSeconds: 90 } },
+      code: "LOCAL-001",
+      name: "Snapore Laptop Booth",
+      location: "Laptop lokal",
+      timezone: "Asia/Jakarta",
+      status: BoothStatus.OFFLINE,
+      setting: { create: { countdownSeconds: 3, maxRetakes: 1, idleTimeoutSeconds: 90, paymentMode: PaymentMode.DISABLED } },
     },
   });
 
   const camera = await prisma.device.upsert({
     where: { boothId_fingerprint: { boothId: booth.id, fingerprint: "browser-camera-primary" } },
-    update: { status: DeviceStatus.ONLINE },
+    update: { name: "Kamera bawaan laptop", status: DeviceStatus.OFFLINE, preferred: true },
     create: {
       boothId: booth.id,
       fingerprint: "browser-camera-primary",
       type: DeviceType.CAMERA,
-      name: "Camera booth utama",
-      status: DeviceStatus.ONLINE,
+      name: "Kamera bawaan laptop",
+      status: DeviceStatus.OFFLINE,
       preferred: true,
       cameraProfile: { create: { kind: CameraKind.MEDIA_DEVICE, width: 1920, height: 1080 } },
     },
   });
 
   const printer = await prisma.device.upsert({
-    where: { boothId_fingerprint: { boothId: booth.id, fingerprint: "printer-mock-primary" } },
-    update: { status: DeviceStatus.ONLINE },
+    where: { boothId_fingerprint: { boothId: booth.id, fingerprint: "printer-os-spooler-primary" } },
+    update: { name: "Printer sistem (belum dikonfigurasi)", status: DeviceStatus.OFFLINE, preferred: true },
     create: {
       boothId: booth.id,
-      fingerprint: "printer-mock-primary",
+      fingerprint: "printer-os-spooler-primary",
       type: DeviceType.PRINTER,
-      name: "DNP DS-RX1 (simulator)",
-      status: DeviceStatus.ONLINE,
+      name: "Printer sistem (belum dikonfigurasi)",
+      status: DeviceStatus.OFFLINE,
       preferred: true,
-      printerProfile: { create: { kind: PrinterKind.MOCK, mediaName: "4x6", dpi: 300 } },
-      paperCounter: { create: { currentSheets: 326, capacity: 400 } },
+      printerProfile: { create: { kind: PrinterKind.OS_SPOOLER, mediaName: "4x6", dpi: 300 } },
+      paperCounter: { create: { currentSheets: 0 } },
     },
   });
 

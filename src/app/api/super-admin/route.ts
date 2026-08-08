@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { evaluateBoothResources } from "@/domain/booth-readiness";
 import { isSessionResettable, SESSION_RESET_CODE_TTL_MINUTES } from "@/domain/session-reset";
-import { BoothStatus, CameraKind, DeviceStatus, DeviceType, PrinterKind, UserRole, XenditEnvironment } from "@/generated/prisma/client";
+import { BoothStatus, CameraKind, DeviceStatus, DeviceType, PaymentMode, UserRole, XenditEnvironment } from "@/generated/prisma/client";
 import { getAuthorizedUser } from "@/lib/auth";
 import { reconcileBoothReadiness, setBoothEnabled } from "@/lib/booth-readiness";
 import { prisma } from "@/lib/prisma";
@@ -354,12 +354,9 @@ export async function POST(request: Request) {
           location: data.location || null,
           timezone: "Asia/Jakarta",
           status: BoothStatus.OFFLINE,
-          setting: { create: { countdownSeconds: 3, maxRetakes: 1, paymentMode: "ONLINE_PROVIDER" } },
+          setting: { create: { countdownSeconds: 3, maxRetakes: 1, paymentMode: PaymentMode.DISABLED } },
           devices: {
-            create: [
-              { fingerprint: `browser-camera-${crypto.randomUUID()}`, type: DeviceType.CAMERA, name: "Browser camera", status: DeviceStatus.OFFLINE, preferred: true, cameraProfile: { create: { kind: CameraKind.MEDIA_DEVICE } } },
-              { fingerprint: `mock-printer-${crypto.randomUUID()}`, type: DeviceType.PRINTER, name: "Printer booth", status: DeviceStatus.OFFLINE, preferred: true, printerProfile: { create: { kind: PrinterKind.MOCK } }, paperCounter: { create: { currentSheets: 0 } } },
-            ],
+            create: { fingerprint: `browser-camera-${crypto.randomUUID()}`, type: DeviceType.CAMERA, name: "Kamera bawaan laptop", status: DeviceStatus.OFFLINE, preferred: true, cameraProfile: { create: { kind: CameraKind.MEDIA_DEVICE } } },
           },
         },
       });

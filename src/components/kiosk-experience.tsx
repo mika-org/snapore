@@ -698,6 +698,17 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     advance("PAYMENT_COMPLETE");
   }, [advance]);
 
+  const bypassPaymentToFrame = useCallback(() => {
+    if (!sessionStartedRef.current) {
+      sessionStartedRef.current = true;
+      const deadline = Date.now() + SESSION_WINDOW_SECONDS * 1000;
+      setSessionDeadline(deadline);
+      setSessionRemaining(SESSION_WINDOW_SECONDS);
+      setPaymentStatus("PAID");
+    }
+    advance("BYPASS_TO_FRAME");
+  }, [advance]);
+
   const beginPayment = async (fromIdle = true) => {
     if (paymentBusy || paymentStartedRef.current || frameCatalogStatus !== "ready") return;
     if (fromIdle) {
@@ -911,6 +922,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
               <h1><span>POSE.</span><em>SNAP.</em><span>KEEP.</span></h1>
               <p>Buat satu strip foto yang sepenuhnya kamu. Pilih layout, ambil pose terbaik, lalu bawa pulang hasil cetaknya.</p>
               <button className="start-button" onClick={() => void beginPayment()} disabled={frameCatalogStatus !== "ready"}>{frameCatalogStatus === "loading" ? "Menyiapkan booth..." : frameCatalogStatus === "maintenance" ? "Booth maintenance" : "Touch to start & pay"} <span>{frameCatalogStatus === "loading" ? <LoaderCircle className="is-spinning" size={21} /> : <ChevronRight size={23} />}</span></button>
+              <button className="kiosk-secondary" type="button" onClick={bypassPaymentToFrame} disabled={frameCatalogStatus !== "ready"} style={{ marginTop: "1rem", width: "100%", justifyContent: "center" }}><ShieldCheck size={15} /> Bypass Pembayaran (Langsung Pilih Frame)</button>
               {frameCatalogStatus !== "ready" && <div className="kiosk-catalog-notice" role="status">{frameCatalogMessage}</div>}
             </div>
             <div className="strip-art" aria-hidden="true">
@@ -930,6 +942,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
               <p>QRIS berlaku selama 5 menit. Setelah pembayaran diterima, timer sesi 15 menit dimulai dan tetap terlihat sampai proses selesai.</p>
               <div className="payment-summary"><span>1 photo print · {booth.name}</span><strong>{formatCurrency(order.total)}</strong></div>
               <button className="kiosk-secondary" onClick={reset}><RotateCcw size={15} /> Cancel</button>
+              <button className="kiosk-secondary" type="button" onClick={bypassPaymentToFrame} style={{ marginTop: "0.5rem" }}><ShieldCheck size={15} /> Bypass Pembayaran (Pilih Frame)</button>
             </div>
             <div className="payment-qr-panel">
               <div className={`payment-countdown ${paymentRemaining <= 60 ? "urgent" : ""}`}><Clock3 size={18} /><div><span>Waktu pembayaran</span><strong>{formatSessionTimer(paymentRemaining)}</strong></div></div>

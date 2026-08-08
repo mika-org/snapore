@@ -30,12 +30,18 @@ export async function POST(request: Request) {
       where: { id: input.boothId, kioskEnabled: true, maintenanceMode: false, tenant: { status: "ACTIVE" } },
       include: {
         tenant: { include: { paymentConfig: true } },
+        setting: true,
         pricingRules: { where: { active: true }, orderBy: { createdAt: "desc" }, take: 1 },
       },
     });
     if (!booth) return NextResponse.json({ error: "Booth sedang nonaktif atau maintenance." }, { status: 409 });
+    const paymentMode = booth.setting?.paymentMode ?? PaymentMode.DISABLED;
+    if (paymentMode === PaymentMode.CASH || paymentMode === PaymentMode.MANUAL) {
+      return NextResponse.json({ error: "Mode pembayaran cash/manual belum didukung kiosk. Pilih Disabled atau Xendit QRIS di pengaturan booth." }, { status: 409 });
+    }
     const paymentConfig = booth.tenant.paymentConfig;
-    if (!paymentConfig?.enabled || !paymentConfig.apiKeyEncrypted) {
+    const encryptedApiKey = paymentConfig?.enabled ? paymentConfig.apiKeyEncrypted : null;
+    if (paymentMode === PaymentMode.ONLINE_PROVIDER && !encryptedApiKey) {
       return NextResponse.json({
         error: "Pembayaran QRIS wajib tetapi Xendit belum aktif atau API key belum dikonfigurasi. Hubungi petugas booth.",
         paymentRequired: true,
@@ -88,6 +94,15 @@ export async function POST(request: Request) {
       });
     });
 
+    if (paymentMode === PaymentMode.DISABLED) {
+      await prisma.payment.upsert({
+        where: { orderId: order.id },
+        update: { mode: PaymentMode.DISABLED, status: PaymentStatus.NOT_REQUIRED, provider: null, providerReference: null, amount: finance.total, paidAt: null, expiresAt: null },
+        create: { orderId: order.id, mode: PaymentMode.DISABLED, status: PaymentStatus.NOT_REQUIRED, amount: finance.total },
+      });
+      return NextResponse.json({ paymentRequired: false, status: PaymentStatus.NOT_REQUIRED, expiresAt: null, finance });
+    }
+
     const existing = await prisma.payment.findUnique({ where: { orderId: order.id } });
     if (existing?.status === PaymentStatus.PAID) {
       return NextResponse.json({ paymentRequired: true, status: PaymentStatus.PAID, expiresAt: existing.expiresAt?.toISOString() ?? null, finance });
@@ -99,7 +114,8 @@ export async function POST(request: Request) {
       }
     }
 
-    const xendit = await createQrisPayment({ encryptedApiKey: paymentConfig.apiKeyEncrypted, amount: finance.total, referenceId: input.sessionId, description: `${booth.name} photo print` });
+    if (!encryptedApiKey) return NextResponse.json({ error: "API key Xendit belum dikonfigurasi." }, { status: 409 });
+    const xendit = await createQrisPayment({ encryptedApiKey, amount: finance.total, referenceId: input.sessionId, description: `${booth.name} photo print` });
     await prisma.payment.upsert({
       where: { orderId: order.id },
       update: { mode: PaymentMode.ONLINE_PROVIDER, status: PaymentStatus.PENDING, provider: "XENDIT", providerReference: xendit.id, amount: finance.total, expiresAt: new Date(xendit.expiresAt), metadata: { qrString: xendit.qrString, expiresAt: xendit.expiresAt } },

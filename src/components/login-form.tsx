@@ -20,9 +20,12 @@ export function LoginForm() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: data.get("email"), password: data.get("password") }),
       });
-      const payload = await response.json() as { error?: string; redirectTo?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Login gagal.");
-      router.replace(payload.redirectTo ?? "/admin");
+      const payload = response.headers.get("content-type")?.includes("application/json")
+        ? await response.json().catch(() => null) as { error?: string; redirectTo?: string } | null
+        : null;
+      if (!response.ok) throw new Error(payload?.error ?? `Login gagal (${response.status}).`);
+      if (!payload?.redirectTo) throw new Error("Respons login tidak valid.");
+      router.replace(payload.redirectTo);
       router.refresh();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Login gagal.");

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Aperture,
   ChartNoAxesCombined,
@@ -18,7 +18,7 @@ import {
 const navigation = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/sessions", label: "Sessions", icon: Images },
-  { href: "/admin", label: "Frames & layout", icon: Frame },
+  { href: "/admin#frames", label: "Frames & layout", icon: Frame },
   { href: "/admin#devices", label: "Devices", icon: MonitorCog },
   { href: "/admin#pricing", label: "Pricing", icon: ChartNoAxesCombined },
   { href: "/admin#settings", label: "Settings", icon: Settings2 },
@@ -43,6 +43,19 @@ export function AppShell({ children, workspace }: { children: React.ReactNode; w
     ? workspace.boothStatus.charAt(0) + workspace.boothStatus.slice(1).toLowerCase()
     : "Belum ada booth";
 
+  useEffect(() => {
+    const syncNavigation = () => {
+      const currentHref = `${pathname}${window.location.hash}`;
+      const exactNavigation = navigation.find((item) => item.href === currentHref)?.href;
+      const pageNavigation = navigation.find((item) => item.href.split("#")[0] === pathname)?.href ?? "/";
+      setSelectedNavigation(exactNavigation ?? pageNavigation);
+    };
+
+    syncNavigation();
+    window.addEventListener("hashchange", syncNavigation);
+    return () => window.removeEventListener("hashchange", syncNavigation);
+  }, [pathname]);
+
   return (
     <div className="app-frame">
       <aside className="sidebar">
@@ -63,12 +76,9 @@ export function AppShell({ children, workspace }: { children: React.ReactNode; w
         <nav className="nav-list" aria-label="Navigasi utama">
           <span className="nav-label">Workspace</span>
           {navigation.map(({ href, label, icon: Icon }) => {
-            const baseHref = href.split("#")[0];
-            const active = baseHref === "/"
-              ? pathname === "/"
-              : pathname.startsWith(baseHref) && selectedNavigation === href;
+            const active = selectedNavigation === href;
             return (
-              <Link className={active ? "nav-item active" : "nav-item"} href={href} key={href} onClick={() => setSelectedNavigation(href)}>
+              <Link className={active ? "nav-item active" : "nav-item"} href={href} key={href} aria-current={active ? "page" : undefined} onClick={() => setSelectedNavigation(href)}>
                 <Icon size={19} />
                 <span>{label}</span>
               </Link>

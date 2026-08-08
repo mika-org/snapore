@@ -146,9 +146,9 @@ function authorized(req: IncomingMessage) {
   return !requireToken || Boolean(deviceToken && req.headers["x-snapore-device-token"] === deviceToken);
 }
 
-const printer: PrinterAdapter = process.env.SNAPORE_PRINTER_MODE === "os-spooler"
-  ? new OsSpoolerPrinterAdapter()
-  : new MockPrinterAdapter();
+const printer: PrinterAdapter = process.env.SNAPORE_PRINTER_MODE === "mock"
+  ? new MockPrinterAdapter()
+  : new OsSpoolerPrinterAdapter();
 
 async function processPrintJob(jobId: string) {
   const state = await loadState();

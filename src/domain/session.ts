@@ -18,6 +18,7 @@ export type KioskStep = (typeof kioskSteps)[number];
 export type KioskEvent =
   | "START"
   | "PAYMENT_COMPLETE"
+  | "BYPASS_TO_FRAME"
   | "SELECT_LAYOUT"
   | "SELECT_FRAME"
   | "CAPTURE_COMPLETE"
@@ -29,9 +30,9 @@ export type KioskEvent =
   | "RESET";
 
 const transitions: Record<KioskStep, Partial<Record<KioskEvent, KioskStep>>> = {
-  IDLE: { START: "PAYMENT", RESET: "IDLE" },
-  PAYMENT: { PAYMENT_COMPLETE: "LAYOUT", RESET: "IDLE" },
-  LAYOUT: { SELECT_LAYOUT: "FRAME", RESET: "IDLE" },
+  IDLE: { START: "PAYMENT", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
+  PAYMENT: { PAYMENT_COMPLETE: "LAYOUT", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
+  LAYOUT: { SELECT_LAYOUT: "FRAME", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
   FRAME: { SELECT_FRAME: "CAPTURE", RESET: "IDLE" },
   CAPTURE: { CAPTURE_COMPLETE: "REVIEW", RETAKE_COMPLETE: "REVIEW", RESET: "IDLE" },
   REVIEW: { RETAKE_PHOTO: "CAPTURE", APPROVE_PHOTOS: "CHECKOUT", RESET: "IDLE" },
