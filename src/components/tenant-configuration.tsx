@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { FrameManager } from "@/components/frame-manager";
+import { SearchableSelect } from "@/components/searchable-select";
 
 type BoothData = {
   id: string;
@@ -226,7 +227,7 @@ function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothC
           <label className="config-field"><span>Countdown foto (detik)</span><input name="countdownSeconds" type="number" min={1} max={30} defaultValue={booth.setting?.countdownSeconds ?? 3} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Batas retake per sesi</span><input name="maxRetakes" type="number" min={0} max={20} defaultValue={booth.setting?.maxRetakes ?? 1} required disabled={!canEdit} /><small>Jumlah kesempatan mengulang foto setelah seluruh pose selesai. Isi 0 untuk menonaktifkan retake.</small></label>
           <label className="config-field"><span>Idle timeout (detik)</span><input name="idleTimeoutSeconds" type="number" min={30} max={3600} defaultValue={booth.setting?.idleTimeoutSeconds ?? 90} required disabled={!canEdit} /></label>
-          <label className="config-field"><span>Mode pembayaran</span><select name="paymentMode" defaultValue={booth.setting?.paymentMode ?? "DISABLED"} disabled={!canEdit}><option value="DISABLED">Disabled</option><option value="CASH" disabled>Cash (belum tersedia)</option><option value="MANUAL" disabled>Manual (belum tersedia)</option><option value="ONLINE_PROVIDER">Xendit QRIS</option></select></label>
+          <label className="config-field"><span>Mode pembayaran</span><SearchableSelect name="paymentMode" defaultValue={booth.setting?.paymentMode ?? "DISABLED"} disabled={!canEdit} ariaLabel="Mode pembayaran" options={[{ value: "DISABLED", label: "Disabled" }, { value: "CASH", label: "Cash (belum tersedia)", disabled: true }, { value: "MANUAL", label: "Manual (belum tersedia)", disabled: true }, { value: "ONLINE_PROVIDER", label: "Xendit QRIS" }]} /></label>
           <label className="config-field"><span>Retensi belum tercetak (jam)</span><input name="unprintedRetentionHours" type="number" min={1} max={720} defaultValue={booth.setting?.unprintedRetentionHours ?? 24} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Retensi tersinkron (hari)</span><input name="syncedRetentionDays" type="number" min={1} max={365} defaultValue={booth.setting?.syncedRetentionDays ?? 7} required disabled={!canEdit} /></label>
           <button className="primary-button config-save" type="submit" disabled={!canEdit || saving !== null}>{saving === "settings" ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save settings</button>
@@ -265,7 +266,7 @@ export function TenantConfiguration({ booths, layouts, payment, canEdit }: { boo
   return (
     <>
       <div className="configuration-toolbar">
-        <label><span>Booth workspace</span><select value={booth?.id ?? ""} onChange={(event) => setBoothId(event.target.value)} disabled={booths.length === 0}>{booths.map((item) => <option value={item.id} key={item.id}>{item.code} · {item.name}</option>)}</select></label>
+        <label><span>Booth workspace</span><SearchableSelect value={booth?.id ?? ""} onValueChange={setBoothId} disabled={booths.length === 0} ariaLabel="Booth workspace" searchPlaceholder="Cari booth..." options={booths.map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))} /></label>
         {booth ? <span className="status-chip"><span className={`status-dot ${statusClass(booth.status)}`} /> {booth.status}</span> : null}
       </div>
       {booth

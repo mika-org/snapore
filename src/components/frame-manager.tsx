@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import type { FrameCatalogItem, FrameCatalogResponse } from "@/domain/frame-catalog";
+import { SearchableSelect } from "@/components/searchable-select";
 
 type UploadField = "grid2" | "grid4" | "grid6" | "grid8";
 
@@ -198,7 +199,7 @@ export function FrameManager({ booths, canEdit = true, selectedBoothId, onBoothC
     <section id="frames">
       <div className="section-heading">
         <div><h2>Frame library</h2><p>{loading ? "Memuat frame..." : `${frames.length} frame aktif · tersimpan di PostgreSQL`}</p></div>
-        <div className="frame-heading-actions"><select aria-label="Pilih booth frame" value={boothId} onChange={(event) => { setInternalBoothId(event.target.value); onBoothChange?.(event.target.value); }}>{booths.map((booth) => <option value={booth.id} key={booth.id}>{booth.code} · {booth.name}</option>)}</select>{canEdit ? <button className="primary-button coral" type="button" disabled={!boothId} onClick={() => { setOpen(true); setEditingFrame(null); resetUploads(); setSuccess(null); }}><Plus size={15} /> New frame</button> : null}</div>
+        <div className="frame-heading-actions"><SearchableSelect ariaLabel="Pilih booth frame" value={boothId} onValueChange={(value) => { setInternalBoothId(value); onBoothChange?.(value); }} searchPlaceholder="Cari booth..." options={booths.map((booth) => ({ value: booth.id, label: `${booth.code} · ${booth.name}` }))} />{canEdit ? <button className="primary-button coral" type="button" disabled={!boothId} onClick={() => { setOpen(true); setEditingFrame(null); resetUploads(); setSuccess(null); }}><Plus size={15} /> New frame</button> : null}</div>
       </div>
 
       {success && <div className="frame-feedback success" role="status"><CheckCircle2 size={17} /> {success}</div>}

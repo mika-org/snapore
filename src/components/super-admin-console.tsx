@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { FrameManager } from "@/components/frame-manager";
+import { SearchableSelect } from "@/components/searchable-select";
 import { formatCurrency } from "@/lib/format";
 
 type Tenant = {
@@ -377,8 +378,8 @@ export function SuperAdminConsole({ name }: { name: string }) {
         {activeView === "users" && <div className="super-content-grid">
           <form className="super-form-card" onSubmit={submitSimple("createUser")}>
             <h2><Users size={18} /> Tambah user</h2>
-            <label>Tenant<select name="tenantId" defaultValue=""><option value="">Global / super admin</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label>
-            <div className="form-split"><label>Nama<input name="name" required /></label><label>Role<select name="role" defaultValue="ADMIN"><option>SUPER_ADMIN</option><option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option></select></label></div>
+            <label>Tenant<SearchableSelect name="tenantId" defaultValue="" ariaLabel="Tenant user" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Global / super admin" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label>
+            <div className="form-split"><label>Nama<input name="name" required /></label><label>Role<SearchableSelect name="role" defaultValue="ADMIN" ariaLabel="Role user" options={["SUPER_ADMIN", "ADMIN", "OPERATOR", "VIEWER"].map((role) => ({ value: role, label: role }))} /></label></div>
             <label>Email<input name="email" type="email" required /></label><label>Password awal<input name="password" type="password" minLength={10} required /></label>
             <button className="primary-button" disabled={saving === "createUser"}><Plus size={15} /> Create user</button>
           </form>
@@ -386,7 +387,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
         </div>}
 
         {activeView === "booths" && <>
-          <section className="super-booth-create"><form className="super-form-card" onSubmit={submitSimple("createBooth")}><h2><Monitor size={18} /> Tambah booth</h2><label>Tenant<select name="tenantId" required defaultValue=""><option value="" disabled>Pilih tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label><div className="form-split"><label>Kode<input name="code" required placeholder="JKT-001" /></label><label>Nama<input name="name" required /></label></div><label>Lokasi<input name="location" /></label><button className="primary-button" disabled={saving === "createBooth"}><Plus size={15} /> Create booth</button></form></section>
+          <section className="super-booth-create"><form className="super-form-card" onSubmit={submitSimple("createBooth")}><h2><Monitor size={18} /> Tambah booth</h2><label>Tenant<SearchableSelect name="tenantId" required defaultValue="" placeholder="Pilih tenant" ariaLabel="Tenant booth" searchPlaceholder="Cari tenant..." options={data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))} /></label><div className="form-split"><label>Kode<input name="code" required placeholder="JKT-001" /></label><label>Nama<input name="name" required /></label></div><label>Lokasi<input name="location" /></label><button className="primary-button" disabled={saving === "createBooth"}><Plus size={15} /> Create booth</button></form></section>
           <section className="super-section"><div className="section-heading"><div><h2>Booth & kiosk UUID</h2><p>Booth tanpa kombinasi layout dan frame otomatis masuk maintenance.</p></div></div><div className="booth-tenant-grid">{data.booths.map((booth) => {
             const operational = booth.kioskEnabled && !booth.maintenanceMode && booth.resourceReady;
             return <article className={!operational ? "booth-card-inactive" : ""} key={booth.id}>
@@ -405,7 +406,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
         {activeView === "sessions" && <section className="super-section tenant-section-first">
           <div className="section-heading">
             <div><h2>Sessions per tenant</h2><p>{visibleSessions.length} dari {data.sessions.length} sesi · kode reset berlaku 10 menit dan hanya dapat dipakai sekali.</p></div>
-            <label className="tenant-filter">Tenant<select value={sessionTenantId} onChange={(event) => setSessionTenantId(event.target.value)}><option value="">Semua tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label>
+            <label className="tenant-filter">Tenant<SearchableSelect value={sessionTenantId} onValueChange={setSessionTenantId} ariaLabel="Filter tenant sesi" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Semua tenant" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label>
           </div>
           {dateRangeFilter}
           <div className="session-recovery-list">
@@ -438,7 +439,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
         </section>}
 
         {activeView === "payments" && <section className="super-section tenant-section-first">
-          <div className="section-heading"><div><h2>Tenant settings & Xendit QRIS</h2><p>Secret ditampilkan tersamarkan dan disimpan terenkripsi.</p></div><label className="tenant-filter">Tenant<select value={selectedTenantId ?? ""} onChange={(event) => setSelectedTenantId(event.target.value || null)}><option value="">Semua tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label></div>
+          <div className="section-heading"><div><h2>Tenant settings & Xendit QRIS</h2><p>Secret ditampilkan tersamarkan dan disimpan terenkripsi.</p></div><label className="tenant-filter">Tenant<SearchableSelect value={selectedTenantId ?? ""} onValueChange={(value) => setSelectedTenantId(value || null)} ariaLabel="Filter tenant pembayaran" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Semua tenant" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label></div>
           <div className="tenant-setting-grid">
             {visibleTenants.map((tenant) => <form className="tenant-setting-card" key={tenant.id} onSubmit={async (event) => {
               event.preventDefault();
@@ -448,7 +449,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
               <header><div><span>{tenant.slug}</span><h3>{tenant.name}</h3></div><em>{tenant.counts.booths} booth · {tenant.counts.frames} frame</em></header>
               <div className="tenant-finance-fields"><label>Pajak %<input name="taxRate" type="number" step="0.01" defaultValue={tenant.taxRate} /></label><label>Biaya per cetak<input name="defaultPrintCost" type="number" defaultValue={tenant.defaultPrintCost} /></label><label>Fee Xendit %<input name="paymentFeeRate" type="number" step="0.01" defaultValue={tenant.paymentFeeRate} /></label><label>Fee tetap<input name="paymentFeeFixed" type="number" defaultValue={tenant.paymentFeeFixed} /></label></div>
               <div className="tenant-checks"><label><input name="pricesIncludeTax" type="checkbox" defaultChecked={tenant.pricesIncludeTax} /> Harga termasuk pajak</label><label><input name="xenditEnabled" type="checkbox" defaultChecked={tenant.payment.enabled} /> Aktifkan Xendit QRIS</label></div>
-              <label>Environment<select name="xenditEnvironment" defaultValue={tenant.payment.environment}><option value="TEST">Test</option><option value="LIVE">Live</option></select></label>
+              <label>Environment<SearchableSelect name="xenditEnvironment" defaultValue={tenant.payment.environment} ariaLabel="Environment Xendit" options={[{ value: "TEST", label: "Test" }, { value: "LIVE", label: "Live" }]} /></label>
               <div className="secret-input"><span><KeyRound size={13} /> API key: {tenant.payment.apiKeyMasked ?? "belum diisi"}</span><input name="xenditApiKey" type="password" placeholder="Isi hanya untuk mengganti key" autoComplete="new-password" /></div>
               <div className="secret-input"><span>Webhook token: {tenant.payment.webhookTokenMasked ?? "belum diisi"}</span><input name="xenditWebhookToken" type="password" placeholder="Isi hanya untuk mengganti token" autoComplete="new-password" /></div>
               <code className="webhook-url">Webhook: /api/payments/xendit/webhook</code><button className="primary-button" disabled={saving === `tenant-${tenant.id}`}><Settings2 size={15} /> Save settings</button>
@@ -515,7 +516,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
             if (ok) setEditingUser(null);
           }}>
             <div className="form-split"><label>Nama<input name="name" required defaultValue={editingUser.name} /></label><label>Email<input name="email" type="email" required defaultValue={editingUser.email} /></label></div>
-            <div className="form-split"><label>Role<select name="role" defaultValue={editingUser.role}><option>SUPER_ADMIN</option><option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option></select></label><label>Tenant<select name="tenantId" defaultValue={editingUser.tenantId ?? ""}><option value="">Global / tanpa tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label></div>
+            <div className="form-split"><label>Role<SearchableSelect name="role" defaultValue={editingUser.role} ariaLabel="Edit role user" options={["SUPER_ADMIN", "ADMIN", "OPERATOR", "VIEWER"].map((role) => ({ value: role, label: role }))} /></label><label>Tenant<SearchableSelect name="tenantId" defaultValue={editingUser.tenantId ?? ""} ariaLabel="Edit tenant user" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Global / tanpa tenant" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label></div>
             <label>Password baru <small>Opsional, minimal 10 karakter</small><input name="password" type="password" minLength={10} autoComplete="new-password" placeholder="Kosongkan jika tidak diubah" /></label>
             <label className="user-active-check"><input name="active" type="checkbox" defaultChecked={editingUser.active} /> Akun aktif dan dapat login</label>
             <footer><button className="secondary-button" type="button" onClick={() => setEditingUser(null)} disabled={Boolean(saving)}>Cancel</button><button className="primary-button" disabled={saving === `user-${editingUser.id}`}>{saving === `user-${editingUser.id}` ? <LoaderCircle className="spin" size={15} /> : <Settings2 size={15} />} Save user</button></footer>
@@ -543,7 +544,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
               <div className="frame-form-copy" style={{ display: "flex", flexDirection: "column", gap: 12, padding: 24 }}>
                 <label><span>Nama tenant</span><input name="name" defaultValue={editingTenant.name} minLength={2} maxLength={80} required /></label>
                 <label><span>Slug unik</span><input name="slug" defaultValue={editingTenant.slug} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></label>
-                <label><span>Status</span><select name="status" defaultValue={editingTenant.status}><option value="ACTIVE">ACTIVE</option><option value="SUSPENDED">SUSPENDED</option></select></label>
+                <label><span>Status</span><SearchableSelect name="status" defaultValue={editingTenant.status} ariaLabel="Status tenant" options={[{ value: "ACTIVE", label: "ACTIVE" }, { value: "SUSPENDED", label: "SUSPENDED" }]} /></label>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <label><span>Pajak %</span><input name="taxRate" type="number" min="0" max="100" step="0.01" defaultValue={editingTenant.taxRate} required /></label>
                   <label><span>Biaya cetak</span><input name="defaultPrintCost" type="number" min="0" defaultValue={editingTenant.defaultPrintCost} required /></label>
