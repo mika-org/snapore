@@ -1,4 +1,4 @@
-import type { LayoutCount } from "@/domain/layout-geometry";
+import { getLayoutSlots, getPrintCanvas, type FrameAssetGeometry, type LayoutCount } from "./layout-geometry";
 import type { FrameCatalogItem } from "@/domain/frame-catalog";
 
 export const kioskSteps = [
@@ -109,6 +109,18 @@ export function getFrameAsset(frame: Pick<FramePreset, "assets">, count: LayoutC
   const asset = frame.assets[count];
   if (!asset) throw new Error(`Frame tidak memiliki aset untuk grid ${count}.`);
   return asset;
+}
+
+export function getFrameGeometry(frame: Pick<FramePreset, "assetMeta">, count: LayoutCount): FrameAssetGeometry {
+  const stored = frame.assetMeta?.[count];
+  if (stored?.slots.length === count) return stored;
+  const canvas = getPrintCanvas("portrait");
+  return {
+    width: canvas.width,
+    height: canvas.height,
+    orientation: "portrait",
+    slots: getLayoutSlots(count, "portrait"),
+  };
 }
 
 export function calculateOrder(basePrice: number, additionalCopyPrice: number, copies: number) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { PaymentMode, UserRole } from "@/generated/prisma/client";
+import { mergeBoothVoiceConfig } from "@/domain/booth-voice-config";
 import { getAuthorizedUser } from "@/lib/auth";
 import { setBoothEnabled } from "@/lib/booth-readiness";
 import { prisma } from "@/lib/prisma";
@@ -29,6 +30,11 @@ const actionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("setBoothEnabled"),
+    boothId: z.uuid(),
+    enabled: z.boolean(),
+  }),
+  z.object({
+    action: z.literal("setVoiceEnabled"),
     boothId: z.uuid(),
     enabled: z.boolean(),
   }),
@@ -66,6 +72,19 @@ export async function POST(request: Request) {
             ? `Booth tetap maintenance: ${readiness?.reason ?? "konfigurasi belum lengkap."}`
             : "Booth berhasil dinonaktifkan.",
       });
+    }
+
+    if (parsed.data.action === "setVoiceEnabled") {
+      const current = await prisma.boothSetting.findUnique({ where: { boothId: booth.id }, select: { config: true } });
+      const setting = await prisma.boothSetting.upsert({
+        where: { boothId: booth.id },
+        update: { config: mergeBoothVoiceConfig(current?.config, parsed.data.enabled) },
+        create: { boothId: booth.id, config: mergeBoothVoiceConfig(null, parsed.data.enabled) },
+      });
+      await prisma.auditLog.create({
+        data: { userId: actor.id, boothId: booth.id, action: parsed.data.enabled ? "KIOSK_VOICE_ENABLED" : "KIOSK_VOICE_DISABLED", entityType: "BOOTH_SETTING", entityId: setting.id },
+      });
+      return NextResponse.json({ ok: true, voiceEnabled: parsed.data.enabled, message: parsed.data.enabled ? "Panduan suara kiosk diaktifkan." : "Panduan suara kiosk dinonaktifkan." });
     }
 
     if (parsed.data.action === "savePricing") {

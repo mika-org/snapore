@@ -2,8 +2,9 @@ import { randomInt } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { evaluateBoothResources } from "@/domain/booth-readiness";
+import { getBoothVoiceEnabled, mergeBoothVoiceConfig } from "@/domain/booth-voice-config";
 import { isSessionResettable, SESSION_RESET_CODE_TTL_MINUTES } from "@/domain/session-reset";
-import { BoothStatus, CameraKind, DeviceStatus, DeviceType, PaymentMode, UserRole, XenditEnvironment } from "@/generated/prisma/client";
+import { BoothStatus, CameraKind, DeviceStatus, DeviceType, PaymentMode, TenantStatus, UserRole, XenditEnvironment } from "@/generated/prisma/client";
 import { getAuthorizedUser } from "@/lib/auth";
 import { reconcileBoothReadiness, setBoothEnabled } from "@/lib/booth-readiness";
 import { prisma } from "@/lib/prisma";
@@ -22,6 +23,19 @@ const actionSchema = z.discriminatedUnion("action", [
     slug: z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
     taxRate: percentage.default(11),
     defaultPrintCost: money.default(5000),
+  }),
+  z.object({
+    action: z.literal("updateTenantDetails"),
+    tenantId: z.uuid(),
+    name: z.string().trim().min(2).max(80),
+    slug: z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+    status: z.enum([TenantStatus.ACTIVE, TenantStatus.SUSPENDED]),
+    taxRate: percentage,
+    defaultPrintCost: money,
+  }),
+  z.object({
+    action: z.literal("deleteTenant"),
+    tenantId: z.uuid(),
   }),
   z.object({
     action: z.literal("createUser"),
@@ -53,6 +67,11 @@ const actionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("updateBoothStatus"),
+    boothId: z.uuid(),
+    enabled: z.boolean(),
+  }),
+  z.object({
+    action: z.literal("updateBoothVoice"),
     boothId: z.uuid(),
     enabled: z.boolean(),
   }),
@@ -92,17 +111,25 @@ function revealResetCode(value: string) {
   }
 }
 
-async function getOverviewResponse() {
+async function getOverviewResponse(request?: Request) {
   if (!await authorize()) return NextResponse.json({ error: "Akses super admin diperlukan." }, { status: 403 });
   const now = new Date();
+  const searchParams = request ? new URL(request.url).searchParams : new URLSearchParams();
+  const fromValue = searchParams.get("from");
+  const toValue = searchParams.get("to");
+  const from = fromValue && !Number.isNaN(Date.parse(fromValue)) ? new Date(fromValue) : null;
+  const to = toValue && !Number.isNaN(Date.parse(toValue)) ? new Date(toValue) : null;
+  const orderDateWhere = from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
+  const sessionDateWhere = from || to ? { startedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
   const [tenants, users, booths, orders, sessions, layouts, activeFrames] = await Promise.all([
     prisma.tenant.findMany({
       orderBy: { createdAt: "asc" },
       include: { paymentConfig: true, _count: { select: { users: true, booths: true, frames: true } } },
     }),
     prisma.user.findMany({ orderBy: { createdAt: "desc" }, select: { id: true, tenantId: true, name: true, email: true, role: true, active: true, createdAt: true } }),
-    prisma.booth.findMany({ orderBy: { createdAt: "asc" }, include: { tenant: { select: { name: true } }, devices: { orderBy: { createdAt: "asc" } } } }),
+    prisma.booth.findMany({ orderBy: { createdAt: "asc" }, include: { tenant: { select: { name: true } }, setting: { select: { config: true } }, devices: { orderBy: { createdAt: "asc" } } } }),
     prisma.order.findMany({
+      where: orderDateWhere,
       include: {
         session: { include: { booth: { include: { tenant: { select: { id: true, name: true } } } } } },
         printJobs: { orderBy: { queuedAt: "asc" }, take: 1, include: { device: true } },
@@ -110,6 +137,7 @@ async function getOverviewResponse() {
       orderBy: { createdAt: "desc" },
     }),
     prisma.photoSession.findMany({
+      where: sessionDateWhere,
       orderBy: { startedAt: "desc" },
       take: 200,
       include: {
@@ -119,6 +147,11 @@ async function getOverviewResponse() {
         order: { include: { payment: true, printJobs: { select: { id: true, status: true } } } },
         uploadJobs: { orderBy: { updatedAt: "desc" }, take: 1 },
         gallery: { select: { id: true } },
+        assets: {
+          where: { kind: { in: ["ORIGINAL", "COMPOSITE", "PREVIEW"] } },
+          orderBy: [{ kind: "desc" }, { createdAt: "asc" }],
+          select: { id: true, kind: true, mimeType: true, byteSize: true, capturedPhoto: { select: { slotIndex: true } } },
+        },
         resetCodes: {
           where: { usedAt: null, revokedAt: null, expiresAt: { gt: now } },
           orderBy: { createdAt: "desc" },
@@ -229,6 +262,7 @@ async function getOverviewResponse() {
       location: booth.location,
       status: booth.status,
       kioskEnabled: booth.kioskEnabled,
+      voiceEnabled: getBoothVoiceEnabled(booth.setting?.config),
       kioskUrl: `/kiosk/${booth.id}`,
       devices: booth.devices.map((device) => ({ id: device.id, name: device.name, type: device.type, status: device.status })),
     })),
@@ -255,6 +289,13 @@ async function getOverviewResponse() {
         total: number(session.order?.total ?? 0),
         paymentStatus: paymentStatus ?? "NOT_REQUIRED",
         uploadStatus: session.uploadJobs[0]?.status ?? null,
+        assets: session.assets.map((asset) => ({
+          id: asset.id,
+          kind: asset.kind,
+          mimeType: asset.mimeType,
+          byteSize: asset.byteSize,
+          slotIndex: asset.capturedPhoto?.slotIndex ?? null,
+        })),
         resettable,
         activeReset: activeReset ? {
           code: revealResetCode(activeReset.codeEncrypted),
@@ -267,9 +308,9 @@ async function getOverviewResponse() {
   });
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return await getOverviewResponse();
+    return await getOverviewResponse(request);
   } catch (error) {
     console.error("GET /api/super-admin failed", error);
     return NextResponse.json(
@@ -293,6 +334,54 @@ export async function POST(request: Request) {
       });
       await prisma.auditLog.create({ data: { userId: actor.id, action: "TENANT_CREATED", entityType: "TENANT", entityId: tenant.id } });
       return NextResponse.json({ id: tenant.id }, { status: 201 });
+    }
+
+    if (data.action === "updateTenantDetails") {
+      const existing = await prisma.tenant.findUnique({ where: { id: data.tenantId } });
+      if (!existing) return NextResponse.json({ error: "Tenant tidak ditemukan." }, { status: 404 });
+      const slugOwner = await prisma.tenant.findFirst({
+        where: { slug: data.slug, NOT: { id: data.tenantId } },
+        select: { id: true },
+      });
+      if (slugOwner) return NextResponse.json({ error: `Slug '${data.slug}' sudah digunakan oleh tenant lain.` }, { status: 400 });
+
+      const tenant = await prisma.tenant.update({
+        where: { id: data.tenantId },
+        data: {
+          name: data.name,
+          slug: data.slug,
+          status: data.status,
+          taxRate: data.taxRate,
+          defaultPrintCost: data.defaultPrintCost,
+        },
+      });
+      await prisma.auditLog.create({
+        data: {
+          userId: actor.id,
+          action: "TENANT_UPDATED",
+          entityType: "TENANT",
+          entityId: tenant.id,
+          metadata: { name: tenant.name, slug: tenant.slug, status: tenant.status },
+        },
+      });
+      return NextResponse.json({ id: tenant.id });
+    }
+
+    if (data.action === "deleteTenant") {
+      const existing = await prisma.tenant.findUnique({ where: { id: data.tenantId } });
+      if (!existing) return NextResponse.json({ error: "Tenant tidak ditemukan." }, { status: 404 });
+
+      await prisma.tenant.delete({ where: { id: data.tenantId } });
+      await prisma.auditLog.create({
+        data: {
+          userId: actor.id,
+          action: "TENANT_DELETED",
+          entityType: "TENANT",
+          entityId: data.tenantId,
+          metadata: { name: existing.name, slug: existing.slug },
+        },
+      });
+      return NextResponse.json({ ok: true });
     }
 
     if (data.action === "createUser") {
@@ -390,6 +479,20 @@ export async function POST(request: Request) {
             ? `${booth.name} tetap maintenance: ${readiness?.reason ?? "konfigurasi belum lengkap."}`
             : `${booth.name} berhasil dinonaktifkan.`,
       });
+    }
+
+    if (data.action === "updateBoothVoice") {
+      const booth = await prisma.booth.findUnique({ where: { id: data.boothId }, select: { id: true, name: true, setting: { select: { config: true } } } });
+      if (!booth) return NextResponse.json({ error: "Booth tidak ditemukan." }, { status: 404 });
+      const setting = await prisma.boothSetting.upsert({
+        where: { boothId: booth.id },
+        update: { config: mergeBoothVoiceConfig(booth.setting?.config, data.enabled) },
+        create: { boothId: booth.id, config: mergeBoothVoiceConfig(null, data.enabled) },
+      });
+      await prisma.auditLog.create({
+        data: { userId: actor.id, boothId: booth.id, action: data.enabled ? "KIOSK_VOICE_ENABLED" : "KIOSK_VOICE_DISABLED", entityType: "BOOTH_SETTING", entityId: setting.id },
+      });
+      return NextResponse.json({ ok: true, message: `Panduan suara ${booth.name} ${data.enabled ? "diaktifkan" : "dinonaktifkan"}. Kiosk akan menerima perubahan otomatis.` });
     }
 
     if (data.action === "generateSessionReset") {

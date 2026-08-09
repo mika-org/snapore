@@ -41,12 +41,16 @@ export async function POST(request: Request) {
     }
     const paymentConfig = booth.tenant.paymentConfig;
     const encryptedApiKey = paymentConfig?.enabled ? paymentConfig.apiKeyEncrypted : null;
-    if (paymentMode === PaymentMode.ONLINE_PROVIDER && !encryptedApiKey) {
+    const previouslyAuthorizedPayment = await prisma.payment.findFirst({
+      where: { order: { sessionId: input.sessionId }, status: PaymentStatus.PAID },
+      select: { id: true },
+    });
+    if (paymentMode === PaymentMode.ONLINE_PROVIDER && !encryptedApiKey && !previouslyAuthorizedPayment) {
       return NextResponse.json({
-        error: "Pembayaran QRIS wajib tetapi Xendit belum aktif atau API key belum dikonfigurasi. Hubungi petugas booth.",
         paymentRequired: true,
-        status: "CONFIGURATION_REQUIRED",
-      }, { status: 409 });
+        bypassAvailable: true,
+        status: "BYPASS_REQUIRED",
+      });
     }
     const tenantPricing = booth.pricingRules[0] ?? await prisma.pricingRule.findFirst({ where: { tenantId: booth.tenantId, boothId: null, active: true }, orderBy: { createdAt: "desc" } });
     const basePrice = tenantPricing ? Number(tenantPricing.basePrice) : 50_000;

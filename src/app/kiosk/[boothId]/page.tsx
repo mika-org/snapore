@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { KioskExperience } from "@/components/kiosk-experience";
 import { KioskUnavailable } from "@/components/kiosk-unavailable";
 import { reconcileBoothReadiness } from "@/lib/booth-readiness";
+import { getBoothVoiceEnabled } from "@/domain/booth-voice-config";
 import { prisma } from "@/lib/prisma";
 
 export const metadata: Metadata = { title: "Kiosk" };
@@ -13,7 +14,7 @@ export default async function BoothKioskPage({ params }: { params: Promise<{ boo
     where: { id: boothId, tenant: { status: "ACTIVE" } },
     include: {
       tenant: { include: { paymentConfig: { select: { enabled: true, apiKeyEncrypted: true } } } },
-      setting: { select: { paymentMode: true } },
+      setting: { select: { paymentMode: true, config: true, maxRetakes: true } },
       pricingRules: { where: { active: true }, orderBy: { createdAt: "desc" }, take: 1 },
     },
   });
@@ -31,6 +32,8 @@ export default async function BoothKioskPage({ params }: { params: Promise<{ boo
     basePrice: pricing ? Number(pricing.basePrice) : 50_000,
     additionalCopyPrice: pricing ? Number(pricing.additionalCopy) : 20_000,
     paymentEnabled: booth.setting?.paymentMode === "ONLINE_PROVIDER",
+    voiceEnabled: getBoothVoiceEnabled(booth.setting?.config),
+    maxRetakes: booth.setting?.maxRetakes ?? 1,
     taxRate: Number(booth.tenant.taxRate),
     pricesIncludeTax: booth.tenant.pricesIncludeTax,
     printCostPerCopy: Number(booth.tenant.defaultPrintCost),

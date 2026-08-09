@@ -61,6 +61,13 @@ Buka:
 - `http://localhost:3000/admin` untuk CMS tenant dan upload frame per booth;
 - `http://127.0.0.1:4545/health` untuk status local device agent.
 
+### Auto-detect kamera dan SDK bridge
+
+- Kamera browser pada laptop, tablet, dan handphone dideteksi ulang saat perangkat dipasang/dilepas. Desktop memprioritaskan DSLR webcam utility atau webcam USB; perangkat mobile memprioritaskan kamera depan.
+- Canon EDSDK dijalankan melalui executable bridge lokal pada `SNAPORE_CANON_SDK_BRIDGE`. SDK vendor lain memakai `SNAPORE_CAMERA_SDK_BRIDGE` dan nama adapter pada `SNAPORE_CAMERA_SDK_KIND`.
+- Bridge menerima perintah `discover --json`, `connect --device <id>`, `disconnect --device <id>`, `capabilities --device <id> --json`, dan `capture --device <id> --output <file.jpg>`.
+- Jika bridge SDK gagal atau kamera dilepas, kiosk otomatis jatuh kembali ke MediaDevices browser. Binary dan lisensi SDK resmi vendor tetap harus dipasang pada komputer booth.
+
 Akun development awal dibuat oleh seed menggunakan `SUPER_ADMIN_EMAIL` dan `SUPER_ADMIN_PASSWORD` dari `.env`. Akun tenant awal memakai `admin@snapore.local` dengan password awal yang sama. Ganti seluruh credential sebelum deployment.
 
 ### Multi-tenant, payment, dan laba bersih

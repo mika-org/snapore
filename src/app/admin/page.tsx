@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { TenantConfiguration } from "@/components/tenant-configuration";
 import { getCurrentUser } from "@/lib/auth";
 import { inspectBoothReadiness } from "@/lib/booth-readiness";
+import { getBoothVoiceEnabled } from "@/domain/booth-voice-config";
 import { prisma } from "@/lib/prisma";
 
 function dateTime(value: Date, timeZone: string) {
@@ -91,6 +92,7 @@ export default async function AdminPage() {
         paymentMode: booth.setting.paymentMode,
         unprintedRetentionHours: booth.setting.unprintedRetentionHours,
         syncedRetentionDays: booth.setting.syncedRetentionDays,
+        voiceEnabled: getBoothVoiceEnabled(booth.setting.config),
       } : null,
       idleMedia: booth.idleMedia.map((media) => ({
         id: media.id,

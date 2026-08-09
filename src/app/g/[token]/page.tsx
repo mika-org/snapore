@@ -17,7 +17,7 @@ export default async function GalleryPage({ params }: { params: Promise<{ token:
     include: {
       gallery: {
         include: {
-          session: { include: { assets: { where: { kind: { in: ["COMPOSITE", "PREVIEW"] } }, orderBy: { createdAt: "desc" } } } },
+          session: { include: { assets: { where: { kind: { in: ["ORIGINAL", "COMPOSITE", "PREVIEW"] } }, orderBy: [{ kind: "desc" }, { createdAt: "asc" }] } } },
         },
       },
     },
@@ -25,6 +25,8 @@ export default async function GalleryPage({ params }: { params: Promise<{ token:
 
   if (!galleryToken || galleryToken.revokedAt || galleryToken.expiresAt < new Date() || !galleryToken.gallery.active) notFound();
   const { session } = galleryToken.gallery;
+  const framedAssets = session.assets.filter((asset) => asset.kind !== "ORIGINAL");
+  const rawAssets = session.assets.filter((asset) => asset.kind === "ORIGINAL");
 
   return (
     <main className="gallery-page">
@@ -35,12 +37,18 @@ export default async function GalleryPage({ params }: { params: Promise<{ token:
         <p>Session {session.publicCode} · Hasil tersedia sementara untuk menjaga privasimu.</p>
       </section>
       <section className="gallery-assets">
-        {session.assets.length ? session.assets.map((asset) => (
-          <article className="gallery-photo" key={asset.id}>
-            <img src={`/api/gallery/${token}/assets/${asset.id}`} alt="Hasil Snapore" />
-            <a className="start-button" href={`/api/gallery/${token}/assets/${asset.id}?download=1`}><Download size={18} /> Download original</a>
-          </article>
-        )) : <div className="gallery-empty"><Images size={34} /><h2>Composite sedang diproses</h2><p>Refresh halaman ini beberapa saat lagi.</p></div>}
+        {session.assets.length ? <>
+          <div className="gallery-group-heading"><span>01</span><div><h2>Hasil dengan frame</h2><p>File siap dibagikan dan dicetak.</p></div></div>
+          <div className="gallery-framed-list">
+            {framedAssets.map((asset) => <article className="gallery-photo" key={asset.id}><img src={`/api/gallery/${token}/assets/${asset.id}`} alt="Hasil foto dengan frame" /><a className="start-button" href={`/api/gallery/${token}/assets/${asset.id}?download=1`}><Download size={18} /> Download hasil</a></article>)}
+            {framedAssets.length === 0 ? <div className="gallery-empty"><Images size={30} /><h2>Hasil frame sedang diproses</h2></div> : null}
+          </div>
+          <div className="gallery-group-heading raw"><span>02</span><div><h2>Foto raw tanpa frame</h2><p>Capture asli yang disimpan ketika cetak dikonfirmasi.</p></div></div>
+          <div className="gallery-raw-grid">
+            {rawAssets.map((asset, index) => <article key={asset.id}><img src={`/api/gallery/${token}/assets/${asset.id}`} alt={`Foto raw ${index + 1}`} /><div><strong>RAW {String(index + 1).padStart(2, "0")}</strong><a href={`/api/gallery/${token}/assets/${asset.id}?download=1`}><Download size={15} /> Download</a></div></article>)}
+            {rawAssets.length === 0 ? <div className="gallery-empty"><Images size={30} /><h2>Foto raw belum tersinkronisasi</h2></div> : null}
+          </div>
+        </> : <div className="gallery-empty"><Images size={34} /><h2>Foto sedang diproses</h2><p>Refresh halaman ini beberapa saat lagi.</p></div>}
       </section>
       <footer className="gallery-footer"><span><Clock3 size={14} /> Link expires {galleryToken.expiresAt.toLocaleDateString("id-ID")}</span><strong>KEEP THE MOMENT LOUD.</strong></footer>
     </main>

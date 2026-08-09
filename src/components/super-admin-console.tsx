@@ -1,13 +1,16 @@
+/* eslint-disable @next/next/no-img-element -- authenticated asset route streams private session photos */
 "use client";
 
 import {
   Aperture,
   BarChart3,
   Building2,
+  CalendarRange,
   ChevronRight,
   CircleDollarSign,
   Copy,
   CreditCard,
+  Download,
   ImagePlus,
   Images,
   KeyRound,
@@ -24,7 +27,12 @@ import {
   Settings2,
   ShieldCheck,
   Store,
+  Trash2,
   Users,
+  Volume2,
+  VolumeX,
+  XCircle,
+  CheckCircle2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
@@ -50,7 +58,7 @@ type ManagedUser = { id: string; tenantId: string | null; name: string; email: s
 type Overview = {
   tenants: Tenant[];
   users: ManagedUser[];
-  booths: Array<{ id: string; tenantId: string; tenant: string; code: string; name: string; location: string | null; status: string; kioskEnabled: boolean; maintenanceMode: boolean; resourceReady: boolean; readinessReason: string | null; layoutCounts: number[]; kioskUrl: string; devices: Array<{ id: string; name: string; type: string; status: string }> }>;
+  booths: Array<{ id: string; tenantId: string; tenant: string; code: string; name: string; location: string | null; status: string; kioskEnabled: boolean; voiceEnabled: boolean; maintenanceMode: boolean; resourceReady: boolean; readinessReason: string | null; layoutCounts: number[]; kioskUrl: string; devices: Array<{ id: string; name: string; type: string; status: string }> }>;
   sessions: Array<{
     id: string;
     publicCode: string;
@@ -69,6 +77,7 @@ type Overview = {
     total: number;
     paymentStatus: string;
     uploadStatus: string | null;
+    assets: Array<{ id: string; kind: string; mimeType: string; byteSize: number; slotIndex: number | null }>;
     resettable: boolean;
     activeReset: { code: string | null; expiresAt: string; reason: string | null } | null;
   }>;
@@ -76,6 +85,7 @@ type Overview = {
 };
 
 type AdminView = "overview" | "create-tenant" | "tenants" | "users" | "booths" | "sessions" | "payments" | "sales";
+type PhotoResultFilter = "ALL" | "SUCCESS" | "FAILED";
 
 const emptyOverview: Overview = { tenants: [], users: [], booths: [], sessions: [], sales: [] };
 
@@ -109,6 +119,19 @@ function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
+function photoSessionOutcome(status: string) {
+  if (status === "COMPLETED") return "SUCCESS" as const;
+  if (["FAILED", "CANCELLED", "EXPIRED"].includes(status)) return "FAILED" as const;
+  return "IN_PROGRESS" as const;
+}
+
+function dateRangeQuery(range: { from: string; to: string }) {
+  const query = new URLSearchParams();
+  if (range.from) query.set("from", new Date(range.from).toISOString());
+  if (range.to) query.set("to", new Date(range.to).toISOString());
+  return query.toString();
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const body = await response.text();
   if (!body.trim()) throw new Error(`Server tidak mengirim respons (${response.status}).`);
@@ -129,12 +152,18 @@ export function SuperAdminConsole({ name }: { name: string }) {
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
+  const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [deletingTenant, setDeletingTenant] = useState<Tenant | null>(null);
   const [sessionTenantId, setSessionTenantId] = useState("");
+  const [photoResultFilter, setPhotoResultFilter] = useState<PhotoResultFilter>("ALL");
+  const [dateDraft, setDateDraft] = useState({ from: "", to: "" });
+  const [appliedDateRange, setAppliedDateRange] = useState({ from: "", to: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/super-admin", { cache: "no-store" });
+      const query = dateRangeQuery(appliedDateRange);
+      const response = await fetch(`/api/super-admin${query ? `?${query}` : ""}`, { cache: "no-store" });
       const payload = await readJsonResponse<Overview & { error?: string; detail?: string }>(response);
       if (!response.ok) throw new Error(payload.error ?? "Data gagal dimuat.");
       setData(payload);
@@ -144,7 +173,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [appliedDateRange]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -184,11 +213,36 @@ export function SuperAdminConsole({ name }: { name: string }) {
   );
   const visibleTenants = selectedTenantId ? data.tenants.filter((tenant) => tenant.id === selectedTenantId) : data.tenants;
   const visibleSessions = sessionTenantId ? data.sessions.filter((session) => session.tenantId === sessionTenantId) : data.sessions;
+  const completedPhotoSessions = data.sessions.filter((session) => photoSessionOutcome(session.status) !== "IN_PROGRESS");
+  const salesPhotoSessions = completedPhotoSessions.filter((session) => photoResultFilter === "ALL" || photoSessionOutcome(session.status) === photoResultFilter);
+  const successfulPhotoCount = completedPhotoSessions.filter((session) => photoSessionOutcome(session.status) === "SUCCESS").length;
+  const failedPhotoCount = completedPhotoSessions.filter((session) => photoSessionOutcome(session.status) === "FAILED").length;
   const selectedTenant = data.tenants.find((tenant) => tenant.id === selectedTenantId) ?? null;
   const selectedTenantBooths = selectedTenantId
     ? data.booths.filter((booth) => booth.tenantId === selectedTenantId).map((booth) => ({ id: booth.id, code: booth.code, name: booth.name }))
     : [];
   const copy = viewCopy[activeView];
+  const appliedDateQuery = dateRangeQuery(appliedDateRange);
+
+  const applyDateFilter = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (dateDraft.from && dateDraft.to && new Date(dateDraft.from) > new Date(dateDraft.to)) {
+      setError("Waktu mulai tidak boleh melewati waktu selesai.");
+      return;
+    }
+    setError(null);
+    setAppliedDateRange({ ...dateDraft });
+  };
+
+  const dateRangeFilter = (
+    <form className="date-range-filter" onSubmit={applyDateFilter}>
+      <span><CalendarRange size={14} /> Rentang waktu</span>
+      <label>Mulai<input type="datetime-local" value={dateDraft.from} onChange={(event) => setDateDraft((current) => ({ ...current, from: event.target.value }))} /></label>
+      <label>Selesai<input type="datetime-local" value={dateDraft.to} onChange={(event) => setDateDraft((current) => ({ ...current, to: event.target.value }))} /></label>
+      <button className="primary-button" type="submit">Terapkan</button>
+      <button className="secondary-button" type="button" onClick={() => { setDateDraft({ from: "", to: "" }); setAppliedDateRange({ from: "", to: "" }); }}>Reset</button>
+    </form>
+  );
 
   const openView = (view: AdminView) => {
     setActiveView(view);
@@ -281,7 +335,43 @@ export function SuperAdminConsole({ name }: { name: string }) {
 
         {activeView === "tenants" && <section className="super-section tenant-section-first">
           <div className="section-heading"><div><h2>{data.tenants.length} tenant aktif</h2><p>Setiap tenant memiliki menu pengaturan terpisah di sidebar.</p></div><button className="primary-button" type="button" onClick={() => openView("create-tenant")}><Plus size={14} /> Tambah tenant</button></div>
-          <div className="tenant-directory-grid expanded">{data.tenants.map((tenant) => <button type="button" key={tenant.id} onClick={() => openTenantWorkspace(tenant.id)}><span>{tenant.status}</span><h3>{tenant.name}</h3><code>{tenant.slug}</code><p>{tenant.counts.booths} booth · {tenant.counts.users} user · {tenant.counts.frames} frame</p><div>Open workspace <ChevronRight size={15} /></div></button>)}</div>
+          <div className="tenant-directory-grid expanded">
+            {data.tenants.map((tenant) => (
+              <div className="tenant-card-wrapper" key={tenant.id} style={{ display: "flex", flexDirection: "column", background: "#1c1c1c", border: "1px solid #333", borderRadius: 16, overflow: "hidden" }}>
+                <button type="button" style={{ display: "block", width: "100%", textAlign: "left", padding: 20, background: "none", border: "none", color: "inherit", cursor: "pointer" }} onClick={() => openTenantWorkspace(tenant.id)}>
+                  <span className="database-badge" style={{ marginBottom: 10 }}>{tenant.status}</span>
+                  <h3 style={{ fontSize: 20, margin: "6px 0 2px" }}>{tenant.name}</h3>
+                  <code style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 12 }}>{tenant.slug}</code>
+                  <p style={{ fontSize: 11, color: "#aaa" }}>{tenant.counts.booths} booth · {tenant.counts.users} user · {tenant.counts.frames} frame</p>
+                </button>
+                <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid #2a2a2a", background: "#171717", justifyContent: "space-between", alignItems: "center" }}>
+                  <button type="button" className="secondary-button" style={{ padding: "5px 12px", fontSize: 11 }} onClick={() => openTenantWorkspace(tenant.id)}>
+                    Open workspace <ChevronRight size={13} />
+                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      aria-label={`Edit ${tenant.name}`}
+                      title="Edit tenant"
+                      onClick={() => { setEditingTenant(tenant); setError(null); }}
+                      style={{ padding: "6px 10px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, background: "#2a2a2a", border: "1px solid #444", borderRadius: 8, color: "#eee", cursor: "pointer" }}
+                    >
+                      <Pencil size={12} /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Hapus ${tenant.name}`}
+                      title="Hapus tenant"
+                      onClick={() => { setDeletingTenant(tenant); setError(null); }}
+                      style={{ padding: "6px 10px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(224,62,45,0.12)", border: "1px solid rgba(224,62,45,0.35)", borderRadius: 8, color: "#e03e2d", cursor: "pointer" }}
+                    >
+                      <Trash2 size={12} /> Hapus
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </section>}
 
         {activeView === "users" && <div className="super-content-grid">
@@ -306,6 +396,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
               <div className="booth-layout-counts">Layout siap: {booth.layoutCounts.length ? booth.layoutCounts.join(" / ") : "belum ada"}</div>
               <code>{booth.kioskUrl}</code>
               <div className="booth-card-actions"><button className="secondary-button" type="button" onClick={() => void navigator.clipboard.writeText(`${window.location.origin}${booth.kioskUrl}`)}><Copy size={13} /> Copy link</button><button className={`booth-power-button ${booth.kioskEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `booth-${booth.id}`} onClick={() => void send({ action: "updateBoothStatus", boothId: booth.id, enabled: !booth.kioskEnabled }, `booth-${booth.id}`)}>{saving === `booth-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />} {booth.kioskEnabled ? "Nonaktifkan" : "Aktifkan"}</button></div>
+              <button className={`booth-voice-button ${booth.voiceEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `voice-${booth.id}`} onClick={() => void send({ action: "updateBoothVoice", boothId: booth.id, enabled: !booth.voiceEnabled }, `voice-${booth.id}`)}>{saving === `voice-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : booth.voiceEnabled ? <VolumeX size={14} /> : <Volume2 size={14} />} {booth.voiceEnabled ? "Nonaktifkan suara" : "Aktifkan suara"}<small>Sinkron otomatis ke kiosk</small></button>
               <div>{booth.devices.map((device) => <small key={device.id}>{device.type}: {device.name}</small>)}</div>
             </article>;
           })}</div></section>
@@ -316,6 +407,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
             <div><h2>Sessions per tenant</h2><p>{visibleSessions.length} dari {data.sessions.length} sesi · kode reset berlaku 10 menit dan hanya dapat dipakai sekali.</p></div>
             <label className="tenant-filter">Tenant<select value={sessionTenantId} onChange={(event) => setSessionTenantId(event.target.value)}><option value="">Semua tenant</option>{data.tenants.map((tenant) => <option value={tenant.id} key={tenant.id}>{tenant.name}</option>)}</select></label>
           </div>
+          {dateRangeFilter}
           <div className="session-recovery-list">
             {visibleSessions.map((session) => <article className="session-recovery-card" key={session.id}>
               <header>
@@ -329,6 +421,13 @@ export function SuperAdminConsole({ name }: { name: string }) {
                 <span><small>Upload</small><strong>{session.uploadStatus ?? "Belum ada job"}</strong></span>
                 <span><small>Total</small><strong>{formatCurrency(session.total)}</strong></span>
               </div>
+              <details className="session-photo-detail compact">
+                <summary><Images size={14} /> Detail foto · {session.assets.filter((asset) => asset.kind === "ORIGINAL").length} raw</summary>
+                <div className="session-photo-grid">
+                  {session.assets.map((asset, index) => <article key={asset.id}><img src={`/api/session-assets/${asset.id}`} alt={asset.kind === "ORIGINAL" ? `Foto raw ${index + 1}` : `Hasil frame ${session.publicCode}`} /><span>{asset.kind === "ORIGINAL" ? `RAW ${(asset.slotIndex ?? index) + 1}` : "HASIL FRAME"}</span><a href={`/api/session-assets/${asset.id}?download=1`}><Download size={12} /> Unduh</a></article>)}
+                  {session.assets.length === 0 ? <p>Foto belum tersinkronisasi.</p> : null}
+                </div>
+              </details>
               <footer>
                 {session.activeReset ? <div className="active-reset-code"><span>Kode aktif sampai {formatDateTime(session.activeReset.expiresAt)}</span>{session.activeReset.code ? <strong>{session.activeReset.code}</strong> : <em>Kode aktif</em>}{session.activeReset.code ? <button type="button" onClick={() => void navigator.clipboard.writeText(session.activeReset?.code ?? "")} aria-label={`Salin kode reset ${session.publicCode}`}><Copy size={13} /></button> : null}</div> : <p>{session.resettable ? "Buat kode jika pengguna perlu mengulang foto tanpa membayar kembali." : "Reset tidak tersedia setelah sesi selesai atau job cetak dibuat."}</p>}
                 <button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode 6 digit"}</button>
@@ -365,7 +464,45 @@ export function SuperAdminConsole({ name }: { name: string }) {
           </div>
         </section>}
 
-        {activeView === "sales" && <section className="super-section tenant-section-first"><div className="section-heading"><div><h2>Sales by booth & device</h2><p>Gross − pajak − biaya cetak − fee pembayaran = laba bersih</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Tenant / Booth</th><th>Device</th><th>Order</th><th>Gross</th><th>Pajak</th><th>Cost + fee</th><th>Net profit</th></tr></thead><tbody>{data.sales.map((row, index) => <tr key={`${row.booth}-${row.device}-${index}`}><td><strong>{row.booth}</strong><small>{row.tenant} · {row.prints} cetak</small></td><td>{row.device}</td><td>{row.orders}</td><td>{formatCurrency(row.gross)}</td><td>{formatCurrency(row.tax)}</td><td>{formatCurrency(row.printCost + row.paymentFee)}</td><td><strong>{formatCurrency(row.netProfit)}</strong></td></tr>)}{data.sales.length === 0 && <tr><td colSpan={7}>Belum ada penjualan yang tercatat.</td></tr>}</tbody></table></div></section>}
+        {activeView === "sales" && <>
+          <section className="super-section tenant-section-first">
+            <div className="section-heading">
+              <div><h2>Sales by booth & device</h2><p>Gross − pajak − biaya cetak − fee pembayaran = laba bersih</p></div>
+              <a className="primary-button sales-export-button" href={`/api/super-admin/sales-export${appliedDateQuery ? `?${appliedDateQuery}` : ""}`}><Download size={15} /> Download Excel</a>
+            </div>
+            {dateRangeFilter}
+            <div className="sales-kpi-grid">
+              <article><CircleDollarSign size={18} /><span>Gross sales</span><strong>{formatCurrency(totals.gross)}</strong></article>
+              <article><ShieldCheck size={18} /><span>Net profit</span><strong>{formatCurrency(totals.net)}</strong></article>
+              <article className="success"><CheckCircle2 size={18} /><span>Foto berhasil</span><strong>{successfulPhotoCount}</strong></article>
+              <article className="failed"><XCircle size={18} /><span>Foto gagal</span><strong>{failedPhotoCount}</strong></article>
+            </div>
+            <div className="table-wrap"><table className="data-table"><thead><tr><th>Tenant / Booth</th><th>Device</th><th>Order</th><th>Gross</th><th>Pajak</th><th>Cost + fee</th><th>Net profit</th></tr></thead><tbody>{data.sales.map((row, index) => <tr key={`${row.booth}-${row.device}-${index}`}><td><strong>{row.booth}</strong><small>{row.tenant} · {row.prints} cetak</small></td><td>{row.device}</td><td>{row.orders}</td><td>{formatCurrency(row.gross)}</td><td>{formatCurrency(row.tax)}</td><td>{formatCurrency(row.printCost + row.paymentFee)}</td><td><strong>{formatCurrency(row.netProfit)}</strong></td></tr>)}{data.sales.length === 0 && <tr><td colSpan={7}>Belum ada penjualan yang tercatat.</td></tr>}</tbody></table></div>
+          </section>
+
+          <section className="super-section sales-photo-results">
+            <div className="section-heading">
+              <div><h2>Detail foto berhasil & gagal</h2><p>Pilih sesi bermasalah untuk membuat kode retake 6 digit tanpa pembayaran ulang.</p></div>
+              <div className="photo-result-filters" role="group" aria-label="Filter hasil foto">
+                {(["ALL", "SUCCESS", "FAILED"] as PhotoResultFilter[]).map((filter) => <button type="button" className={photoResultFilter === filter ? "active" : ""} key={filter} onClick={() => setPhotoResultFilter(filter)}>{filter === "ALL" ? `Semua ${completedPhotoSessions.length}` : filter === "SUCCESS" ? `Berhasil ${successfulPhotoCount}` : `Gagal ${failedPhotoCount}`}</button>)}
+              </div>
+            </div>
+            <div className="photo-result-list">
+              {salesPhotoSessions.map((session) => {
+                const outcome = photoSessionOutcome(session.status);
+                return <article className={`photo-result-card ${outcome.toLowerCase()}`} key={session.id}>
+                  <header><div><span>{session.tenant} · {session.boothCode}</span><h3>{session.publicCode}</h3><p>{formatDateTime(session.startedAt)} · {session.layout ?? "Layout belum dipilih"}</p></div><strong>{outcome === "SUCCESS" ? <CheckCircle2 size={14} /> : <XCircle size={14} />} {outcome === "SUCCESS" ? "BERHASIL" : "GAGAL"}</strong></header>
+                  <div className="photo-result-facts"><span><small>Status</small><b>{session.status}</b></span><span><small>Foto</small><b>{session.photoCount}</b></span><span><small>Frame</small><b>{session.frame ?? "—"}</b></span><span><small>Payment</small><b>{session.paymentStatus}</b></span><span><small>Total</small><b>{formatCurrency(session.total)}</b></span></div>
+                  <footer>
+                    {session.activeReset ? <div className="active-reset-code"><span>Berlaku sampai {formatDateTime(session.activeReset.expiresAt)}</span>{session.activeReset.code ? <strong>{session.activeReset.code}</strong> : <em>Kode aktif</em>}{session.activeReset.code ? <button type="button" onClick={() => void navigator.clipboard.writeText(session.activeReset?.code ?? "")} aria-label={`Salin kode reset ${session.publicCode}`}><Copy size={13} /></button> : null}</div> : <p>{session.resettable ? "Sesi dapat diulang dengan kode retake." : "Kode retake tidak tersedia untuk status pembayaran/job sesi ini."}</p>}
+                    <button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode retake"}</button>
+                  </footer>
+                </article>;
+              })}
+              {!loading && salesPhotoSessions.length === 0 ? <div className="tenant-workspace-empty"><Images size={25} /><strong>Tidak ada hasil</strong><span>Belum ada sesi foto pada filter ini.</span></div> : null}
+            </div>
+          </section>
+        </>}
       </main>
 
       {editingUser && <div className="user-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEditingUser(null); }}>
@@ -385,6 +522,72 @@ export function SuperAdminConsole({ name }: { name: string }) {
           </form>
         </section>
       </div>}
+
+      {editingTenant && (
+        <div className="frame-modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setEditingTenant(null); }}>
+          <section className="frame-modal" style={{ width: "min(520px, 100%)" }} role="dialog" aria-modal="true">
+            <header>
+              <div>
+                <span className="eyebrow"><Pencil size={13} /> Edit Tenant</span>
+                <h2>Edit {editingTenant.name}</h2>
+                <p>Ubah nama tenant, slug, status operasional, pajak, dan biaya cetak.</p>
+              </div>
+              <button type="button" className="frame-modal-close" onClick={() => setEditingTenant(null)} disabled={Boolean(saving)} aria-label="Tutup"><X size={19} /></button>
+            </header>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const values = formObject(e.currentTarget);
+              const ok = await send({ action: "updateTenantDetails", tenantId: editingTenant.id, ...values }, "updateTenantDetails");
+              if (ok) setEditingTenant(null);
+            }}>
+              <div className="frame-form-copy" style={{ display: "flex", flexDirection: "column", gap: 12, padding: 24 }}>
+                <label><span>Nama tenant</span><input name="name" defaultValue={editingTenant.name} minLength={2} maxLength={80} required /></label>
+                <label><span>Slug unik</span><input name="slug" defaultValue={editingTenant.slug} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></label>
+                <label><span>Status</span><select name="status" defaultValue={editingTenant.status}><option value="ACTIVE">ACTIVE</option><option value="SUSPENDED">SUSPENDED</option></select></label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <label><span>Pajak %</span><input name="taxRate" type="number" min="0" max="100" step="0.01" defaultValue={editingTenant.taxRate} required /></label>
+                  <label><span>Biaya cetak</span><input name="defaultPrintCost" type="number" min="0" defaultValue={editingTenant.defaultPrintCost} required /></label>
+                </div>
+              </div>
+              {error && <div className="frame-feedback error" style={{ margin: "0 24px 16px" }} role="alert">{error}</div>}
+              <footer>
+                <button className="secondary-button" type="button" onClick={() => setEditingTenant(null)} disabled={Boolean(saving)}>Cancel</button>
+                <button className="primary-button" type="submit" disabled={saving === "updateTenantDetails"}>
+                  {saving === "updateTenantDetails" ? <LoaderCircle className="spin" size={16} /> : <Pencil size={16} />} Update tenant
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {deletingTenant && (
+        <div className="frame-modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setDeletingTenant(null); }}>
+          <section className="frame-modal" style={{ width: "min(480px, 100%)" }} role="dialog" aria-modal="true">
+            <header>
+              <div>
+                <span className="eyebrow" style={{ color: "#e03e2d" }}><Trash2 size={13} /> Delete Tenant</span>
+                <h2>Hapus Tenant</h2>
+                <p>Apakah Anda yakin ingin menghapus tenant <strong>{deletingTenant.name}</strong> ({deletingTenant.slug})?</p>
+              </div>
+              <button type="button" className="frame-modal-close" onClick={() => setDeletingTenant(null)} disabled={Boolean(saving)} aria-label="Tutup"><X size={19} /></button>
+            </header>
+            <footer style={{ padding: "20px 24px" }}>
+              <p style={{ color: "#e03e2d", fontSize: "11px", marginBottom: 16 }}>⚠️ PERINGATAN: Seluruh booth, user, frame, dan data yang terhubung dengan tenant ini akan terhapus.</p>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <button className="secondary-button" type="button" onClick={() => setDeletingTenant(null)} disabled={Boolean(saving)}>Batal</button>
+                <button className="primary-button" style={{ background: "#e03e2d", borderColor: "#c02e1d", color: "white" }} type="button" onClick={async () => {
+                  const ok = await send({ action: "deleteTenant", tenantId: deletingTenant.id }, "deleteTenant");
+                  if (ok) setDeletingTenant(null);
+                }} disabled={saving === "deleteTenant"}>
+                  {saving === "deleteTenant" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+                  {saving === "deleteTenant" ? "Hapus..." : "Hapus Tenant"}
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

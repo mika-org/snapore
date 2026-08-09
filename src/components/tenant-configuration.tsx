@@ -15,6 +15,8 @@ import {
   Save,
   ShieldAlert,
   Tablet,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { FrameManager } from "@/components/frame-manager";
@@ -52,6 +54,7 @@ type BoothData = {
     paymentMode: "DISABLED" | "CASH" | "MANUAL" | "ONLINE_PROVIDER";
     unprintedRetentionHours: number;
     syncedRetentionDays: number;
+    voiceEnabled: boolean;
   };
   idleMedia: Array<{ id: string; title: string; mediaType: string; durationMs: number; active: boolean }>;
 };
@@ -74,7 +77,7 @@ function deviceIcon(type: string) {
 
 function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothChange }: { booth: BoothData; booths: BoothData[]; layouts: LayoutData[]; payment: PaymentData; canEdit: boolean; onBoothChange: (boothId: string) => void }) {
   const router = useRouter();
-  const [saving, setSaving] = useState<"pricing" | "settings" | "availability" | null>(null);
+  const [saving, setSaving] = useState<"pricing" | "settings" | "availability" | "voice" | null>(null);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   const submit = async (event: FormEvent<HTMLFormElement>, kind: "pricing" | "settings") => {
@@ -140,6 +143,27 @@ function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothC
     }
   };
 
+  const updateVoice = async () => {
+    const enabled = !(booth.setting?.voiceEnabled ?? true);
+    setSaving("voice");
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/tenant/configuration", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "setVoiceEnabled", boothId: booth.id, enabled }),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error ?? "Status suara gagal disimpan.");
+      setFeedback({ kind: "success", text: `${result.message ?? "Status suara berhasil disimpan."} Kiosk menerima perubahan otomatis.` });
+      router.refresh();
+    } catch (error) {
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : "Status suara gagal disimpan." });
+    } finally {
+      setSaving(null);
+    }
+  };
+
   return (
     <div className="cms-grid">
       <div>
@@ -200,13 +224,19 @@ function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothC
           <h3><Clock3 size={17} /> Booth settings · {booth.code}</h3>
           {!booth.setting ? <p className="settings-note">Belum ada konfigurasi booth. Nilai berikut menjadi konfigurasi awal ketika disimpan.</p> : null}
           <label className="config-field"><span>Countdown foto (detik)</span><input name="countdownSeconds" type="number" min={1} max={30} defaultValue={booth.setting?.countdownSeconds ?? 3} required disabled={!canEdit} /></label>
-          <label className="config-field"><span>Maksimum retake</span><input name="maxRetakes" type="number" min={0} max={20} defaultValue={booth.setting?.maxRetakes ?? 1} required disabled={!canEdit} /></label>
+          <label className="config-field"><span>Batas retake per sesi</span><input name="maxRetakes" type="number" min={0} max={20} defaultValue={booth.setting?.maxRetakes ?? 1} required disabled={!canEdit} /><small>Jumlah kesempatan mengulang foto setelah seluruh pose selesai. Isi 0 untuk menonaktifkan retake.</small></label>
           <label className="config-field"><span>Idle timeout (detik)</span><input name="idleTimeoutSeconds" type="number" min={30} max={3600} defaultValue={booth.setting?.idleTimeoutSeconds ?? 90} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Mode pembayaran</span><select name="paymentMode" defaultValue={booth.setting?.paymentMode ?? "DISABLED"} disabled={!canEdit}><option value="DISABLED">Disabled</option><option value="CASH" disabled>Cash (belum tersedia)</option><option value="MANUAL" disabled>Manual (belum tersedia)</option><option value="ONLINE_PROVIDER">Xendit QRIS</option></select></label>
           <label className="config-field"><span>Retensi belum tercetak (jam)</span><input name="unprintedRetentionHours" type="number" min={1} max={720} defaultValue={booth.setting?.unprintedRetentionHours ?? 24} required disabled={!canEdit} /></label>
           <label className="config-field"><span>Retensi tersinkron (hari)</span><input name="syncedRetentionDays" type="number" min={1} max={365} defaultValue={booth.setting?.syncedRetentionDays ?? 7} required disabled={!canEdit} /></label>
           <button className="primary-button config-save" type="submit" disabled={!canEdit || saving !== null}>{saving === "settings" ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save settings</button>
         </form>
+
+        <section className="settings-card">
+          <h3>{booth.setting?.voiceEnabled ?? true ? <Volume2 size={17} /> : <VolumeX size={17} />} Panduan suara kiosk</h3>
+          <div className="form-row"><label><strong>{booth.setting?.voiceEnabled ?? true ? "Aktif" : "Nonaktif"}</strong><span>Perubahan diterapkan otomatis ke kiosk tanpa reload.</span></label><span className={`status-dot ${booth.setting?.voiceEnabled ?? true ? "online" : "error"}`} /></div>
+          <button className={`booth-availability-action ${booth.setting?.voiceEnabled ?? true ? "disable" : "enable"}`} type="button" disabled={!canEdit || saving !== null} onClick={() => void updateVoice()}>{saving === "voice" ? <LoaderCircle className="spin" size={15} /> : booth.setting?.voiceEnabled ?? true ? <VolumeX size={15} /> : <Volume2 size={15} />} {booth.setting?.voiceEnabled ?? true ? "Nonaktifkan suara" : "Aktifkan suara"}</button>
+        </section>
 
         <section className="settings-card">
           <h3><Film size={17} /> Idle media</h3>

@@ -4,7 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, statfs, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { MockPrinterAdapter, OsSpoolerPrinterAdapter } from "./adapters";
-import type { PrinterAdapter } from "./contracts";
+import { SdkBridgeCameraAdapter } from "./camera-adapters";
+import type { CameraAdapter, DiscoveredDevice, PrinterAdapter } from "./contracts";
 
 const port = Number(process.env.SNAPORE_AGENT_PORT ?? 4545);
 const dataRoot = resolve(process.env.SNAPORE_DATA_DIR ?? "./snapore-data");
@@ -149,6 +150,19 @@ function authorized(req: IncomingMessage) {
 const printer: PrinterAdapter = process.env.SNAPORE_PRINTER_MODE === "mock"
   ? new MockPrinterAdapter()
   : new OsSpoolerPrinterAdapter();
+const cameras: CameraAdapter[] = [
+  ...(process.env.SNAPORE_CANON_SDK_BRIDGE ? [new SdkBridgeCameraAdapter("CANON_EDSDK", process.env.SNAPORE_CANON_SDK_BRIDGE)] : []),
+  ...(process.env.SNAPORE_CAMERA_SDK_BRIDGE ? [new SdkBridgeCameraAdapter(process.env.SNAPORE_CAMERA_SDK_KIND ?? "VENDOR_SDK", process.env.SNAPORE_CAMERA_SDK_BRIDGE)] : []),
+];
+
+async function discoverSdkCameras() {
+  const discovered: Array<{ adapter: CameraAdapter; device: DiscoveredDevice }> = [];
+  for (const adapter of cameras) {
+    const devices = await adapter.discover().catch(() => []);
+    devices.forEach((device) => discovered.push({ adapter, device }));
+  }
+  return discovered;
+}
 
 async function processPrintJob(jobId: string) {
   const state = await loadState();
@@ -251,15 +265,42 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/health") {
       const disk = await statfs(dataRoot).catch(() => null);
       const discovered = await printer.discover();
+      const sdkCameras = await discoverSdkCameras();
       json(res, 200, {
         version: "0.1.0",
         boothCode,
         storage: { root: dataRoot, freeBytes: disk ? disk.bavail * disk.bsize : undefined },
         devices: [
           { id: "browser-camera", type: "CAMERA", name: "Browser camera", status: "ONLINE" },
+          ...sdkCameras.map(({ device }) => device),
           ...discovered,
         ],
       });
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/cameras") {
+      const discovered = await discoverSdkCameras();
+      json(res, 200, { cameras: discovered.map(({ device }) => device) });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/camera/capture") {
+      const input = await readJson<{ deviceId?: string }>(req);
+      const discovered = await discoverSdkCameras();
+      const selected = input.deviceId
+        ? discovered.find(({ device }) => device.id === input.deviceId)
+        : discovered[0];
+      if (!selected) {
+        json(res, 404, { error: "Kamera SDK tidak ditemukan" });
+        return;
+      }
+      await selected.adapter.connect(selected.device.id);
+      const capture = await selected.adapter.capture();
+      res.statusCode = 200;
+      res.setHeader("content-type", capture.mimeType);
+      res.setHeader("x-snapore-camera-id", selected.device.id);
+      res.end(capture.bytes);
       return;
     }
 

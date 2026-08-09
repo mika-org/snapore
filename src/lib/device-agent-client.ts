@@ -6,7 +6,7 @@ export type AgentHealth = {
   online: boolean;
   version?: string;
   storage?: { root: string; freeBytes?: number };
-  devices?: Array<{ id: string; type: string; name: string; status: string }>;
+  devices?: Array<{ id: string; type: string; kind?: string; name: string; status: string; capabilities?: Record<string, unknown> }>;
 };
 
 async function blobToDataUrl(blob: Blob) {
@@ -26,6 +26,20 @@ export async function getAgentHealth(): Promise<AgentHealth> {
   } catch {
     return { online: false };
   }
+}
+
+export async function captureWithAgentCamera(deviceId: string) {
+  const response = await fetch(`${agentUrl}/camera/capture`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId }),
+    signal: AbortSignal.timeout(35_000),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(failure?.error ?? "Capture kamera SDK gagal");
+  }
+  return response.blob();
 }
 
 export async function persistCaptureLocally(input: {
@@ -68,7 +82,7 @@ export async function clearLocalSessionProgress(sessionId: string) {
 export async function createPrintAndUploadJobs(input: {
   sessionId: string;
   composite: Blob;
-  captures: Array<{ id: string; blob: Blob }>;
+  captures: Array<{ id: string; blob: Blob; slotIndex: number; revision: number }>;
   copies: number;
   layoutId: string;
   frameId: string;
@@ -131,7 +145,7 @@ export async function createPrintAndUploadJobs(input: {
 export async function syncSessionFromBrowser(input: {
   sessionId: string;
   composite: Blob;
-  captures: Array<{ id: string; blob: Blob }>;
+  captures: Array<{ id: string; blob: Blob; slotIndex: number; revision: number }>;
   copies: number;
   layoutId: string;
   frameId: string;
@@ -149,6 +163,7 @@ export async function syncSessionFromBrowser(input: {
     source: "BROWSER_FALLBACK",
     layoutId: input.layoutId,
     frameId: input.frameId,
+    captures: input.captures.map(({ id, slotIndex, revision }) => ({ id, slotIndex, revision, active: true })),
     localPrintJob: { id: input.printJobId, copies: input.copies, status: "QUEUED" },
   }));
   input.captures.forEach((capture) => {

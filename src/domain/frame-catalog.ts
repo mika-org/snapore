@@ -1,6 +1,7 @@
-import type { LayoutCount } from "@/domain/layout-geometry";
+import type { FrameAssetGeometry, LayoutCount } from "@/domain/layout-geometry";
 
 export type FrameAssets = Partial<Record<LayoutCount, string>>;
+export type FrameAssetMetadata = Partial<Record<LayoutCount, FrameAssetGeometry>>;
 
 export type FrameCatalogItem = {
   id: string;
@@ -9,6 +10,7 @@ export type FrameCatalogItem = {
   description: string | null;
   active: boolean;
   assets: FrameAssets;
+  assetMeta?: FrameAssetMetadata;
   variants: LayoutCount[];
   createdAt: string;
 };

@@ -3,6 +3,7 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { LayoutCount } from "@/domain/layout-geometry";
+import { detectTransparentFrameSlots } from "./frame-slot-detection";
 
 export const FRAME_WIDTH = 1200;
 export const FRAME_HEIGHT = 1800;
@@ -19,7 +20,7 @@ export function slugifyFrameName(name: string) {
     .slice(0, 64) || "frame";
 }
 
-export async function normalizeFramePng(file: File) {
+export async function normalizeFramePng(file: File, count: LayoutCount) {
   if (file.size <= 0 || file.size > MAX_FRAME_BYTES) {
     throw new Error("Ukuran setiap PNG harus antara 1 byte dan 10 MB.");
   }
@@ -28,22 +29,39 @@ export async function normalizeFramePng(file: File) {
   }
 
   const source = Buffer.from(await file.arrayBuffer());
-  const image = sharp(source, { limitInputPixels: FRAME_WIDTH * FRAME_HEIGHT * 2 });
+  const image = sharp(source);
   const metadata = await image.metadata();
   if (metadata.format !== "png") {
     throw new Error("Isi file tidak terdeteksi sebagai PNG yang valid.");
-  }
-  if (metadata.width !== FRAME_WIDTH || metadata.height !== FRAME_HEIGHT) {
-    throw new Error(`Ukuran frame wajib ${FRAME_WIDTH}×${FRAME_HEIGHT} px.`);
   }
   if (!metadata.hasAlpha) {
     throw new Error("PNG harus memiliki kanal transparansi untuk area foto.");
   }
 
-  const bytes = await image.png({ compressionLevel: 9 }).toBuffer();
+  const isLandscape = (metadata.width ?? 1200) > (metadata.height ?? 1800);
+  const widthPx = isLandscape ? 1800 : 1200;
+  const heightPx = isLandscape ? 1200 : 1800;
+
+  const processed = metadata.width === widthPx && metadata.height === heightPx
+    ? image
+    : image.resize(widthPx, heightPx, {
+        fit: "cover",
+        position: "centre",
+        kernel: sharp.kernel.lanczos3,
+      });
+
+  const bytes = await processed
+    .png({ compressionLevel: 9, adaptiveFiltering: true, palette: true })
+    .toBuffer();
+  const slots = await detectTransparentFrameSlots(bytes, count, widthPx, heightPx);
+
   return {
     bytes,
     checksum: createHash("sha256").update(bytes).digest("hex"),
+    widthPx,
+    heightPx,
+    orientation: isLandscape ? ("landscape" as const) : ("portrait" as const),
+    slots,
   };
 }
 

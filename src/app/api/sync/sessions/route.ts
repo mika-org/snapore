@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { NextResponse } from "next/server";
+import sharp from "sharp";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
@@ -67,7 +68,10 @@ export async function POST(request: Request) {
 
     const uploadRoot = resolve(/* turbopackIgnore: true */ process.env.SNAPORE_SERVER_UPLOAD_DIR ?? "./server-uploads");
     const directory = join(/* turbopackIgnore: true */ uploadRoot, boothCode, sessionId);
-    const assetRecords: Array<{ kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; byteSize: number; checksum: string; objectKey: string; localPath: string }> = [];
+    const manifestCaptures = Array.isArray(manifest.captures)
+      ? manifest.captures.filter((capture): capture is { id?: string; slotIndex?: number; revision?: number } => Boolean(capture) && typeof capture === "object")
+      : [];
+    const assetRecords: Array<{ fileName: string; kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; byteSize: number; checksum: string; objectKey: string; localPath: string; width: number; height: number; slotIndex: number | null; revision: number | null }> = [];
 
     for (const file of files) {
       const fileName = safeSegment(file.name.replace(/\.[^.]+$/, ""));
@@ -76,13 +80,21 @@ export async function POST(request: Request) {
       if (bytes.length === 0 || bytes.length > 30 * 1024 * 1024) throw new Error("Ukuran asset tidak valid");
       const destination = join(/* turbopackIgnore: true */ directory, `${fileName}${extension}`);
       await atomicWrite(destination, bytes);
+      const imageMetadata = await sharp(bytes).metadata().catch(() => null);
+      const captureMetadata = manifestCaptures.find((capture) => capture.id === fileName);
+      const originalIndex = assetRecords.filter((asset) => asset.kind === "ORIGINAL").length;
       assetRecords.push({
+        fileName,
         kind: fileName.startsWith("composite-") ? "COMPOSITE" : "ORIGINAL",
         mimeType: file.type || "image/jpeg",
         byteSize: bytes.length,
         checksum: hash(bytes),
         objectKey: `${boothCode}/${sessionId}/${fileName}${extension}`,
         localPath: destination,
+        width: imageMetadata?.width ?? 0,
+        height: imageMetadata?.height ?? 0,
+        slotIndex: fileName.startsWith("composite-") ? null : captureMetadata?.slotIndex ?? originalIndex,
+        revision: fileName.startsWith("composite-") ? null : captureMetadata?.revision ?? 1,
       });
     }
 
@@ -104,10 +116,45 @@ export async function POST(request: Request) {
     });
 
     for (const asset of assetRecords) {
+      const capturedPhoto = asset.kind === "ORIGINAL"
+        ? await prisma.capturedPhoto.upsert({
+          where: { sessionId_checksum: { sessionId, checksum: asset.checksum } },
+          update: {
+            slotIndex: asset.slotIndex,
+            selected: true,
+            width: asset.width,
+            height: asset.height,
+            localPath: asset.localPath,
+            metadata: { revision: asset.revision, objectKey: asset.objectKey },
+          },
+          create: {
+            id: z.uuid().safeParse(asset.fileName).success ? asset.fileName : randomUUID(),
+            sessionId,
+            slotIndex: asset.slotIndex,
+            selected: true,
+            width: asset.width,
+            height: asset.height,
+            checksum: asset.checksum,
+            localPath: asset.localPath,
+            source: "MEDIA_DEVICE",
+            metadata: { revision: asset.revision, objectKey: asset.objectKey },
+          },
+        })
+        : null;
       await prisma.asset.upsert({
         where: { sessionId_checksum_kind: { sessionId, checksum: asset.checksum, kind: asset.kind } },
-        update: { objectKey: asset.objectKey, syncedAt: new Date() },
-        create: { ...asset, sessionId, syncedAt: new Date() },
+        update: { objectKey: asset.objectKey, localPath: asset.localPath, capturedPhotoId: capturedPhoto?.id, syncedAt: new Date() },
+        create: {
+          sessionId,
+          capturedPhotoId: capturedPhoto?.id,
+          kind: asset.kind,
+          mimeType: asset.mimeType,
+          byteSize: asset.byteSize,
+          checksum: asset.checksum,
+          objectKey: asset.objectKey,
+          localPath: asset.localPath,
+          syncedAt: new Date(),
+        },
       });
     }
 

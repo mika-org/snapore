@@ -1,5 +1,7 @@
+/* eslint-disable @next/next/no-img-element -- authenticated asset route streams private session photos */
+import { Fragment } from "react";
 import Link from "next/link";
-import { Images, Search } from "lucide-react";
+import { Download, Images, Search } from "lucide-react";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { getCurrentUser } from "@/lib/auth";
@@ -50,6 +52,11 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
         layoutVersion: { include: { layout: { select: { name: true } } } },
         order: { include: { payment: true, printJobs: { orderBy: { updatedAt: "desc" } } } },
         uploadJobs: { orderBy: { updatedAt: "desc" } },
+        assets: {
+          where: { kind: { in: ["ORIGINAL", "COMPOSITE", "PREVIEW"] } },
+          orderBy: [{ kind: "desc" }, { createdAt: "asc" }],
+          include: { capturedPhoto: { select: { slotIndex: true, width: true, height: true, selected: true } } },
+        },
       },
     }),
     prisma.photoSession.count({ where: { booth: { tenantId } } }),
@@ -88,17 +95,32 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
               {sessions.map((session) => {
                 const latestUpload = session.uploadJobs[0];
                 const paymentStatus = session.order?.payment?.status ?? "NOT_REQUIRED";
+                const composites = session.assets.filter((asset) => asset.kind !== "ORIGINAL");
+                const originals = session.assets.filter((asset) => asset.kind === "ORIGINAL");
                 return (
-                  <tr key={session.id}>
-                    <td className="session-code">{session.publicCode}</td>
-                    <td>{session.booth.code} · {session.booth.name}</td>
-                    <td>{dateTime(session.startedAt, session.booth.timezone)}</td>
-                    <td>{session.layoutVersion?.layout.name ?? "Belum dipilih"}</td>
-                    <td>{session.order?.copies ?? 0}</td>
-                    <td><span className="status-chip"><span className={`status-dot ${statusClass(paymentStatus)}`} />{paymentStatus}</span></td>
-                    <td><span className="status-chip"><span className={`status-dot ${statusClass(latestUpload?.status ?? "WAITING")}`} />{latestUpload?.status ?? "BELUM ADA JOB"}</span></td>
-                    <td><span className="status-chip"><span className={`status-dot ${statusClass(session.status)}`} />{session.status}</span></td>
-                  </tr>
+                  <Fragment key={session.id}>
+                    <tr>
+                      <td className="session-code">{session.publicCode}</td>
+                      <td>{session.booth.code} · {session.booth.name}</td>
+                      <td>{dateTime(session.startedAt, session.booth.timezone)}</td>
+                      <td>{session.layoutVersion?.layout.name ?? "Belum dipilih"}</td>
+                      <td>{session.order?.copies ?? 0}</td>
+                      <td><span className="status-chip"><span className={`status-dot ${statusClass(paymentStatus)}`} />{paymentStatus}</span></td>
+                      <td><span className="status-chip"><span className={`status-dot ${statusClass(latestUpload?.status ?? "WAITING")}`} />{latestUpload?.status ?? "BELUM ADA JOB"}</span></td>
+                      <td><span className="status-chip"><span className={`status-dot ${statusClass(session.status)}`} />{session.status}</span></td>
+                    </tr>
+                    <tr className="session-photo-detail-row">
+                      <td colSpan={8}>
+                        <details className="session-photo-detail">
+                          <summary><Images size={14} /> Detail foto · {originals.length} raw · {composites.length} hasil cetak</summary>
+                          <div className="session-photo-groups">
+                            <section><h3>Hasil dengan frame</h3><div className="session-photo-grid">{composites.map((asset) => <article key={asset.id}><img src={`/api/session-assets/${asset.id}`} alt={`Hasil cetak ${session.publicCode}`} /><span>{asset.kind}</span><a href={`/api/session-assets/${asset.id}?download=1`}><Download size={12} /> Unduh</a></article>)}{composites.length === 0 ? <p>Belum tersedia.</p> : null}</div></section>
+                            <section><h3>Foto raw tanpa frame</h3><div className="session-photo-grid">{originals.map((asset, index) => <article key={asset.id}><img src={`/api/session-assets/${asset.id}`} alt={`Foto raw ${index + 1}`} /><span>RAW {asset.capturedPhoto?.slotIndex !== null && asset.capturedPhoto?.slotIndex !== undefined ? asset.capturedPhoto.slotIndex + 1 : index + 1}</span><a href={`/api/session-assets/${asset.id}?download=1`}><Download size={12} /> Unduh</a></article>)}{originals.length === 0 ? <p>Belum tersedia.</p> : null}</div></section>
+                          </div>
+                        </details>
+                      </td>
+                    </tr>
+                  </Fragment>
                 );
               })}
               {sessions.length === 0 ? <tr><td colSpan={8}><div className="table-empty">{query ? "Tidak ada sesi yang cocok dengan pencarian." : "Belum ada sesi untuk tenant ini."}</div></td></tr> : null}

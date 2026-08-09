@@ -16,6 +16,7 @@ export type BoothResourceReadiness = {
 export function evaluateBoothResources(publishedLayoutKinds: readonly string[], publishedFrameKinds: readonly string[]): BoothResourceReadiness {
   const layoutKinds = new Set(publishedLayoutKinds);
   const frameKinds = new Set(publishedFrameKinds);
+
   const layoutCounts = Object.entries(layoutCountByKind)
     .filter(([kind]) => layoutKinds.has(kind) && frameKinds.has(kind))
     .map(([, count]) => count)
