@@ -6,7 +6,41 @@ export type AgentHealth = {
   online: boolean;
   version?: string;
   storage?: { root: string; freeBytes?: number };
-  devices?: Array<{ id: string; type: string; kind?: string; name: string; status: string; capabilities?: Record<string, unknown> }>;
+  devices?: Array<{ id: string; fingerprint?: string; type: string; kind?: string; name: string; status: string; capabilities?: Record<string, unknown> }>;
+  printerBridge?: {
+    configured: PrinterBridgeConfig | null;
+    connectedDeviceId: string | null;
+    connectedDeviceName: string | null;
+    health: { status: string; message?: string; checkedAt: string };
+    sdk: { dnp: boolean; epson: boolean };
+    paper: { remaining: number; capacity: number; source: "SENSOR" } | null;
+  };
+};
+
+export type PrinterBridgeConfig = {
+  deviceId: string;
+  queueName: string;
+  kind: string;
+  autoConnect: boolean;
+  mediaName: string;
+  dpi: number;
+  borderless: boolean;
+  dnpCutQueueName?: string;
+};
+
+export type KioskHardwareReport = {
+  ok: boolean;
+  reportedAt: string;
+  camera: { name: string; status: string; kind: string } | null;
+  printer: { name: string; status: string; kind: string; queueName: string } | null;
+  paper: {
+    remaining: number;
+    capacity: number;
+    lowThreshold: number;
+    level: "OK" | "LOW" | "EMPTY" | "UNKNOWN";
+    source: "SENSOR" | "ESTIMATED";
+    updatedAt: string;
+  } | null;
 };
 
 async function blobToDataUrl(blob: Blob) {
@@ -20,12 +54,58 @@ async function blobToDataUrl(blob: Blob) {
 
 export async function getAgentHealth(): Promise<AgentHealth> {
   try {
-    const response = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(1200) });
+    const response = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(7000) });
     if (!response.ok) throw new Error("Agent tidak siap");
     return { online: true, ...(await response.json()) };
   } catch {
     return { online: false };
   }
+}
+
+export async function configureAgentPrinter(input: PrinterBridgeConfig) {
+  const response = await fetch(`${agentUrl}/printer/configure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(8000),
+  });
+  const payload = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
+  if (!response.ok || !payload.ok) throw new Error(payload.error ?? "Bridge printer gagal dikonfigurasi");
+  return payload;
+}
+
+export async function reportKioskHardware(boothId: string, input: {
+  kioskInstanceId: string;
+  camera?: {
+    fingerprint: string;
+    name: string;
+    status: "ONLINE" | "OFFLINE" | "DEGRADED";
+    kind: "MEDIA_DEVICE" | "DSLR_TETHERED";
+    driverName?: string | null;
+    width?: number;
+    height?: number;
+  } | null;
+  printer?: {
+    fingerprint: string;
+    deviceId: string;
+    name: string;
+    status: "ONLINE" | "OFFLINE" | "DEGRADED";
+    kind: string;
+    driverName?: string | null;
+    queueName: string;
+    paper?: { remaining: number; capacity: number; sensorBacked: boolean };
+  } | null;
+}) {
+  const response = await fetch(`/api/kiosk/${encodeURIComponent(boothId)}/heartbeat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  const payload = await response.json().catch(() => ({})) as Partial<KioskHardwareReport> & { error?: string };
+  if (!response.ok || !payload.ok) throw new Error(payload.error ?? "Heartbeat hardware kiosk gagal");
+  return payload as KioskHardwareReport;
 }
 
 export async function captureWithAgentCamera(deviceId: string) {
@@ -86,6 +166,7 @@ export async function createPrintAndUploadJobs(input: {
   copies: number;
   layoutId: string;
   frameId: string;
+  dnpTwoInchCut: boolean;
   boothId: string;
   boothCode: string;
   forceBrowserFallback?: boolean;
@@ -115,7 +196,7 @@ export async function createPrintAndUploadJobs(input: {
       sessionId: input.sessionId,
       type: "PRINT",
       status: "QUEUED",
-      payload: { composite: input.composite, copies: input.copies, layoutId: input.layoutId, frameId: input.frameId },
+      payload: { composite: input.composite, copies: input.copies, layoutId: input.layoutId, frameId: input.frameId, dnpTwoInchCut: input.dnpTwoInchCut },
       createdAt: new Date().toISOString(),
     }),
     saveOfflineJob({
@@ -149,6 +230,7 @@ export async function syncSessionFromBrowser(input: {
   copies: number;
   layoutId: string;
   frameId: string;
+  dnpTwoInchCut: boolean;
   boothId: string;
   boothCode: string;
   printJobId: string;
@@ -163,8 +245,9 @@ export async function syncSessionFromBrowser(input: {
     source: "BROWSER_FALLBACK",
     layoutId: input.layoutId,
     frameId: input.frameId,
+    dnpTwoInchCut: input.dnpTwoInchCut,
     captures: input.captures.map(({ id, slotIndex, revision }) => ({ id, slotIndex, revision, active: true })),
-    localPrintJob: { id: input.printJobId, copies: input.copies, status: "QUEUED" },
+    localPrintJob: { id: input.printJobId, copies: input.copies, status: "QUEUED", dnpTwoInchCut: input.dnpTwoInchCut },
   }));
   input.captures.forEach((capture) => {
     const extension = capture.blob.type === "image/png" ? "png" : capture.blob.type === "image/webp" ? "webp" : "jpg";

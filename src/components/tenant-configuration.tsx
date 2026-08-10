@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { FrameManager } from "@/components/frame-manager";
+import { PrinterBridgeMonitor } from "@/components/printer-bridge-monitor";
 import { SearchableSelect } from "@/components/searchable-select";
 
 type BoothData = {
@@ -34,10 +35,29 @@ type BoothData = {
   layoutCounts: number[];
   devices: Array<{
     id: string;
+    fingerprint: string;
     name: string;
     type: string;
     status: string;
     preferred: boolean;
+    driverName: string | null;
+    printer: null | {
+      kind: string;
+      queueName: string | null;
+      dnpCutQueueName: string | null;
+      autoConnect: boolean;
+      mediaName: string;
+      dpi: number;
+      borderless: boolean;
+    };
+    paper: null | {
+      currentSheets: number;
+      capacity: number;
+      lowThreshold: number;
+      initialized: boolean;
+      sensorBacked: boolean;
+      updatedAt: string;
+    };
     detail: string;
     lastSeenLabel: string | null;
   }>;
@@ -174,6 +194,22 @@ function BoothConfiguration({ booth, booths, layouts, payment, canEdit, onBoothC
           <div><h2>Devices</h2><p>{booth.devices.length} perangkat terdaftar pada {booth.code}</p></div>
           <button className="secondary-button" type="button" onClick={() => router.refresh()}><RefreshCcw size={14} /> Refresh data</button>
         </div>
+        <PrinterBridgeMonitor
+          boothId={booth.id}
+          canEdit={canEdit}
+          registeredPrinters={booth.devices.filter((device) => device.type === "PRINTER" && device.printer).map((device) => ({
+            fingerprint: device.fingerprint,
+            name: device.name,
+            driverName: device.driverName,
+            preferred: device.preferred,
+            ...device.printer!,
+            currentSheets: device.paper?.currentSheets ?? 0,
+            paperCapacity: device.paper?.capacity ?? 400,
+            lowPaperThreshold: device.paper?.lowThreshold ?? 20,
+            paperInitialized: device.paper?.initialized ?? false,
+            sensorBacked: device.paper?.sensorBacked ?? false,
+          }))}
+        />
         <article className="panel">
           <div className="panel-body">
             {booth.devices.map((device) => {

@@ -1,0 +1,7 @@
+ALTER TABLE "PrinterProfile"
+ADD COLUMN "queueName" TEXT,
+ADD COLUMN "dnpCutQueueName" TEXT,
+ADD COLUMN "autoConnect" BOOLEAN NOT NULL DEFAULT true;
+
+ALTER TABLE "Frame"
+ADD COLUMN "dnpTwoInchCut" BOOLEAN NOT NULL DEFAULT false;

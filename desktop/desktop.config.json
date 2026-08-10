@@ -1,0 +1,13 @@
+{
+  "webPort": 3765,
+  "startPath": "/login",
+  "openDevTools": false,
+  "window": {
+    "width": 1440,
+    "height": 900,
+    "minWidth": 1024,
+    "minHeight": 700,
+    "fullscreen": false,
+    "kiosk": false
+  }
+}

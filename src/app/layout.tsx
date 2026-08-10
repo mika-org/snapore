@@ -27,7 +27,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="id">
-      <body><PwaRegister />{children}</body>
+      <body suppressHydrationWarning><PwaRegister />{children}</body>
     </html>
   );
 }

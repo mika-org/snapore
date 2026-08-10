@@ -25,6 +25,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   SunMedium,
+  TriangleAlert,
   Volume2,
   VolumeX,
   Wifi,
@@ -40,7 +41,7 @@ import { calculateSaleFinance } from "@/domain/finance";
 import { kioskStepVoiceAsset, kioskVoiceAsset, retakeVoiceAsset } from "@/domain/kiosk-voice";
 import { paymentAllowsSessionStart, paymentRequiresBypass } from "@/domain/payment-flow";
 import { composePrint } from "@/lib/compose";
-import { captureWithAgentCamera, clearLocalSessionProgress, createPrintAndUploadJobs, getAgentHealth, getAgentJobs, getServerSyncStatus, persistCaptureLocally, syncSessionFromBrowser } from "@/lib/device-agent-client";
+import { captureWithAgentCamera, clearLocalSessionProgress, createPrintAndUploadJobs, getAgentHealth, getAgentJobs, getServerSyncStatus, persistCaptureLocally, reportKioskHardware, syncSessionFromBrowser, type KioskHardwareReport } from "@/lib/device-agent-client";
 import { calculateOrder, framePresets, getFrameAsset, getFrameGeometry, layoutPresets, transitionSession, type FramePreset, type KioskStep, type LayoutPreset } from "@/domain/session";
 import { formatSessionTimer, PAYMENT_WINDOW_SECONDS, remainingSeconds, renewSessionDeadline, SESSION_WINDOW_SECONDS } from "@/domain/session-timers";
 import { clampGestureValue, getGestureMetrics, getPhotoTransformGeometry, normalizeGestureAngle, type GesturePoint } from "@/domain/photo-gestures";
@@ -76,6 +77,15 @@ const defaultEditorSettings: EditorSettings = {
   offsetX: 0,
   offsetY: 0,
 };
+
+function reportableDeviceStatus(status?: string): "ONLINE" | "OFFLINE" | "DEGRADED" {
+  if (status === "ONLINE" || status === "DEGRADED") return status;
+  return "OFFLINE";
+}
+
+function reportablePrinterKind(kind?: string) {
+  return ["DNP", "EPSON", "OS_SPOOLER", "ESC_POS", "MOCK"].includes(kind ?? "") ? kind! : "OS_SPOOLER";
+}
 
 type GestureState = {
   pointers: Map<number, GesturePoint>;
@@ -242,6 +252,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraLabel, setCameraLabel] = useState("Auto camera");
   const [agentCamera, setAgentCamera] = useState<{ id: string; name: string; kind?: string } | null>(null);
+  const [hardwareReport, setHardwareReport] = useState<KioskHardwareReport | null>(null);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
   const [retakesUsed, setRetakesUsed] = useState(0);
@@ -355,6 +366,15 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastVoiceRef = useRef<{ source: string; playedAt: number } | null>(null);
   const remoteVoiceEnabledRef = useRef(booth.voiceEnabled);
+  const browserCameraReportRef = useRef<{
+    fingerprint: string;
+    name: string;
+    status: "ONLINE" | "OFFLINE" | "DEGRADED";
+    kind: "MEDIA_DEVICE";
+    width?: number;
+    height?: number;
+  } | null>(null);
+  const kioskInstanceIdRef = useRef("");
 
   const stopVoice = useCallback(() => {
     voiceRequestRef.current += 1;
@@ -511,12 +531,50 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
         setAgentOnline(health.online);
         const sdkCamera = health.devices?.find((device) => device.type === "CAMERA" && device.id !== "browser-camera" && device.status === "ONLINE");
         setAgentCamera(sdkCamera ? { id: sdkCamera.id, name: sdkCamera.name, kind: sdkCamera.kind } : null);
+        const connectedPrinter = health.devices?.find((device) =>
+          device.type === "PRINTER"
+          && (device.id === health.printerBridge?.connectedDeviceId || device.name === health.printerBridge?.connectedDeviceName),
+        );
+        if (!kioskInstanceIdRef.current) {
+          const storageKey = `snapore:kiosk-instance:${booth.id}`;
+          const stored = window.localStorage.getItem(storageKey);
+          kioskInstanceIdRef.current = stored && /^[0-9a-f-]{36}$/i.test(stored) ? stored : crypto.randomUUID();
+          window.localStorage.setItem(storageKey, kioskInstanceIdRef.current);
+        }
+        const cameraPayload = sdkCamera ? {
+          fingerprint: sdkCamera.fingerprint ?? sdkCamera.id,
+          name: sdkCamera.name,
+          status: reportableDeviceStatus(sdkCamera.status),
+          kind: "DSLR_TETHERED" as const,
+          driverName: typeof sdkCamera.capabilities?.driverName === "string" ? sdkCamera.capabilities.driverName : null,
+          width: typeof sdkCamera.capabilities?.width === "number" ? sdkCamera.capabilities.width : undefined,
+          height: typeof sdkCamera.capabilities?.height === "number" ? sdkCamera.capabilities.height : undefined,
+        } : browserCameraReportRef.current;
+        try {
+          const report = await reportKioskHardware(booth.id, {
+            kioskInstanceId: kioskInstanceIdRef.current,
+            camera: cameraPayload,
+            printer: connectedPrinter ? {
+              fingerprint: connectedPrinter.fingerprint ?? connectedPrinter.id,
+              deviceId: connectedPrinter.id,
+              name: connectedPrinter.name,
+              status: reportableDeviceStatus(health.printerBridge?.health.status ?? connectedPrinter.status),
+              kind: reportablePrinterKind(connectedPrinter.kind),
+              driverName: typeof connectedPrinter.capabilities?.driverName === "string" ? connectedPrinter.capabilities.driverName : null,
+              queueName: String(connectedPrinter.capabilities?.queueName ?? connectedPrinter.name),
+              paper: health.printerBridge?.paper ? { ...health.printerBridge.paper, sensorBacked: true } : undefined,
+            } : null,
+          });
+          if (active) setHardwareReport(report);
+        } catch {
+          // Monitoring server may be temporarily unreachable; local capture/print remains available.
+        }
       }
     };
-    void check();
+    const initial = window.setTimeout(() => void check(), 0);
     const timer = window.setInterval(check, 5000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, []);
+    return () => { active = false; window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [booth.id]);
 
   useEffect(() => {
     if (step !== "CAPTURE") return;
@@ -546,14 +604,26 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           return;
         }
         streamRef.current = stream;
+        const videoTrack = stream.getVideoTracks()[0];
+        const videoSettings = videoTrack?.getSettings();
+        const activeCameraName = videoTrack?.label || preferred?.label || "Kamera perangkat";
+        browserCameraReportRef.current = {
+          fingerprint: `browser-camera:${videoSettings?.deviceId || activeCameraName}`,
+          name: activeCameraName,
+          status: "ONLINE",
+          kind: "MEDIA_DEVICE",
+          width: videoSettings?.width,
+          height: videoSettings?.height,
+        };
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-        setCameraLabel(stream.getVideoTracks()[0]?.label || preferred?.label || "Kamera perangkat");
+        setCameraLabel(activeCameraName);
         setCameraError(null);
         setCameraReady(true);
       } catch {
+        if (browserCameraReportRef.current) browserCameraReportRef.current.status = "DEGRADED";
         setCameraError("Kamera tidak tersedia. Mode demo capture aktif.");
         setCameraReady(false);
       }
@@ -566,6 +636,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       navigator.mediaDevices?.removeEventListener?.("devicechange", startCamera);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      if (browserCameraReportRef.current) browserCameraReportRef.current.status = "OFFLINE";
       setCameraReady(false);
     };
   }, [step]);
@@ -584,6 +655,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
         copies,
         layoutId: layout.id,
         frameId: frame.id,
+        dnpTwoInchCut: frame.dnpTwoInchCut,
         boothId: booth.id,
         boothCode: booth.code,
         printJobId: jobIds.printJobId,
@@ -605,7 +677,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       syncInFlightRef.current = false;
       setSyncBusy(false);
     }
-  }, [booth.code, booth.id, composite, copies, frame.id, jobIds, layout.id, photos, sessionId]);
+  }, [booth.code, booth.id, composite, copies, frame.dnpTwoInchCut, frame.id, jobIds, layout.id, photos, sessionId]);
 
   useEffect(() => {
     if (step !== "DONE" || galleryUrl) return;
@@ -857,6 +929,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       copies,
       layoutId: layout.id,
       frameId: frame.id,
+      dnpTwoInchCut: frame.dnpTwoInchCut,
       boothId: booth.id,
       boothCode: booth.code,
       forceBrowserFallback: forceBrowserFallbackRef.current,
@@ -873,7 +946,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     await wait(2700);
     advance("PRINT_COMPLETE");
     setPaymentBusy(false);
-  }, [advance, booth.code, booth.id, composite, copies, frame.id, layout.id, photos, registerFinalSelection, sessionId]);
+  }, [advance, booth.code, booth.id, composite, copies, frame.dnpTwoInchCut, frame.id, layout.id, photos, registerFinalSelection, sessionId]);
 
   const startPaidSession = useCallback(() => {
     if (sessionStartedRef.current) return;
@@ -923,7 +996,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       setPaymentBypassRequired(false);
       setBypassPasscode("");
       setBypassReason("");
-      advance("BYPASS_TO_FRAME");
+      advance("BYPASS_PAYMENT");
     } catch (err) {
       setBypassError(err instanceof Error ? err.message : "Proses bypass gagal.");
     } finally {
@@ -1138,6 +1211,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     ? activeFrameGeometry.slots[0]
     : activeFrameGeometry.slots[editingIndex] ?? activeFrameGeometry.slots[0];
   const retakesRemaining = Math.max(0, maxRetakes - retakesUsed);
+  const paperOut = hardwareReport?.paper?.level === "EMPTY";
+  const paperLow = hardwareReport?.paper?.level === "LOW";
 
   return (
     <div className="kiosk">
@@ -1165,6 +1240,14 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
         </div>
       </header>
 
+      <section className="kiosk-hardware-strip" aria-label="Perangkat kiosk yang aktif">
+        <div><Camera size={14} /><span><small>CAMERA</small><strong>{hardwareReport?.camera?.name ?? (agentCamera?.name || cameraLabel)}</strong></span><i className={`status-dot ${hardwareReport?.camera?.status === "ONLINE" || cameraReady || agentCamera ? "online" : "warn"}`} /></div>
+        <div><Printer size={14} /><span><small>PRINTER</small><strong>{hardwareReport?.printer?.name ?? "Belum terhubung"}</strong></span><i className={`status-dot ${hardwareReport?.printer?.status === "ONLINE" ? "online" : "error"}`} /></div>
+        <div className={paperOut ? "paper-empty" : paperLow ? "paper-low" : ""}><span><small>PAPER · {hardwareReport?.paper?.source ?? "UNKNOWN"}</small><strong>{hardwareReport?.paper && hardwareReport.paper.level !== "UNKNOWN" ? `${hardwareReport.paper.remaining} / ${hardwareReport.paper.capacity} lembar` : "Belum dikonfigurasi"}</strong></span><i className={`status-dot ${paperOut ? "error" : paperLow ? "warn" : hardwareReport?.paper?.level === "OK" ? "online" : "warn"}`} /></div>
+      </section>
+
+      {(paperOut || paperLow) && <div className={`kiosk-paper-alert ${paperOut ? "empty" : "low"}`} role="alert"><TriangleAlert size={20} /><div><strong>{paperOut ? "Kertas printer habis" : "Kertas printer hampir habis"}</strong><span>{paperOut ? "Sesi baru dihentikan. Minta petugas mengisi kertas dan memperbarui counter." : `Tersisa ${hardwareReport?.paper?.remaining ?? 0} lembar. Petugas sebaiknya menyiapkan penggantian media.`}</span></div></div>}
+
       <main className="kiosk-main">
         {step === "IDLE" && (
           <section className="kiosk-step idle-stage">
@@ -1172,7 +1255,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
               <div className="kiosk-eyebrow"><Sparkles size={14} /> Your moment starts here</div>
               <h1><span>POSE.</span><em>SNAP.</em><span>KEEP.</span></h1>
               <p>Buat satu strip foto yang sepenuhnya kamu. Pilih layout, ambil pose terbaik, lalu bawa pulang hasil cetaknya.</p>
-              <button className="start-button" onClick={() => void beginPayment()} disabled={frameCatalogStatus !== "ready"}>{frameCatalogStatus === "loading" ? "Menyiapkan booth..." : frameCatalogStatus === "maintenance" ? "Booth maintenance" : "Touch to start & pay"} <span>{frameCatalogStatus === "loading" ? <LoaderCircle className="is-spinning" size={21} /> : <ChevronRight size={23} />}</span></button>
+              <button className="start-button" onClick={() => void beginPayment()} disabled={frameCatalogStatus !== "ready" || paperOut}>{paperOut ? "Kertas printer habis" : frameCatalogStatus === "loading" ? "Menyiapkan booth..." : frameCatalogStatus === "maintenance" ? "Booth maintenance" : booth.paymentEnabled ? "Touch to start & pay" : "Touch to start"} <span>{frameCatalogStatus === "loading" ? <LoaderCircle className="is-spinning" size={21} /> : paperOut ? <TriangleAlert size={21} /> : <ChevronRight size={23} />}</span></button>
               {frameCatalogStatus !== "ready" && <div className="kiosk-catalog-notice" role="status">{frameCatalogMessage}</div>}
             </div>
             <div className="strip-art" aria-hidden="true">
@@ -1210,16 +1293,16 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
 
         {step === "LAYOUT" && (
           <section className="kiosk-step">
-            <header className="step-header"><div><div className="kiosk-eyebrow">01 · Layout</div><h1>How many moments?</h1></div><span className="step-count">Step 1 of 5</span></header>
+            <header className="step-header"><div><div className="kiosk-eyebrow">01 · Jumlah foto</div><h1>Pilih jumlah foto.</h1><p>Tentukan Grid 2x, 4x, 6x, atau 8x sebelum memilih frame.</p></div><span className="step-count">Step 1 of 5</span></header>
             <div className="selection-grid">
               {availableLayouts.map((item) => (
-                <button className={`selection-card ${layout.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => {
+                <button aria-label={`Pilih Grid ${item.count} foto`} className={`selection-card ${layout.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => {
                   setLayout(item);
                   const compatibleFrame = availableFrames.find((candidate) => Boolean(candidate.assets[item.count]));
                   if (compatibleFrame) setFrame(compatibleFrame);
                   advance("SELECT_LAYOUT");
                 }}>
-                  <span className="selection-number">{item.count}</span>
+                  <span className="selection-number">{item.count}x</span>
                   <div className={`layout-mini grid-${item.count}`}>{Array.from({ length: item.count }, (_, index) => <span key={index} />)}</div>
                   <div><h2>{item.name}</h2><p>{item.tagline}</p></div>
                   {item.count === 4 && <span className="selection-tag">Most loved</span>}
@@ -1231,12 +1314,13 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
 
         {step === "FRAME" && (
           <section className="kiosk-step">
-            <header className="step-header"><div><div className="kiosk-eyebrow">02 · Frame</div><h1>Pick your energy.</h1></div><span className="step-count">Step 2 of 5</span></header>
+            <header className="step-header"><div><div className="kiosk-eyebrow">02 · Frame · Grid {layout.count}x</div><h1>Pilih frame.</h1><p>Semua frame di bawah kompatibel dengan {layout.count} foto.</p></div><span className="step-count">Step 2 of 5</span></header>
+            <button className="kiosk-secondary" onClick={() => advance("CHANGE_LAYOUT")}><RotateCcw size={15} /> Ganti jumlah foto</button>
             <div className="selection-grid">
               {framesForLayout.map((item) => (
                 <button className={`selection-card frame-choice ${frame.id === item.id ? "selected" : ""}`} key={item.id} onClick={() => { setFrame(item); advance("SELECT_FRAME"); }}>
                   <div className={`frame-large ${item.tone}`}><img src={getFrameAsset(item, layout.count)} alt={`${item.name} grid ${layout.count}`} /></div>
-                  <h2>{item.name}</h2><p>Exclusive Snapore frame · 4×6</p>
+                  <h2>{item.name}</h2><p>Grid {layout.count} foto · cetak 4×6 inci</p>
                 </button>
               ))}
             </div>
@@ -1365,7 +1449,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                 <h2>Ready to print?</h2>
                 <div className="price-lines"><div className="price-row"><span>Photo package</span><strong>{formatCurrency(booth.basePrice)}</strong></div><div className="price-row"><span>Pajak {booth.taxRate}%{booth.pricesIncludeTax ? " (included)" : ""}</span><strong>{formatCurrency(order.tax)}</strong></div><div className="price-row total"><span>Sudah dibayar</span><span>{formatCurrency(order.total)}</span></div></div>
                 {paymentError && <div className="login-error" role="alert">{paymentError}</div>}
-                <button className="kiosk-primary" onClick={() => void confirmPrint()} disabled={paymentBusy}><Printer size={17} /> {paymentBusy ? "Preparing print..." : "Confirm & print"}</button>
+                <button className="kiosk-primary" onClick={() => void confirmPrint()} disabled={paymentBusy || paperOut}><Printer size={17} /> {paperOut ? "Kertas printer habis" : paymentBusy ? "Preparing print..." : "Confirm & print"}</button>
                 <div className="offline-assurance"><CloudOff size={17} /><span><strong>Offline-safe printing.</strong><br />File dicetak dari directory lokal. Upload ke server mulai bersamaan dan akan retry jika internet putus.</span></div>
               </div>
             </div>

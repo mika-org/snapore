@@ -35,6 +35,14 @@ type PrintJobRecord = {
   status: "QUEUED" | "PRINTING" | "PRINTED" | "FAILED";
   spoolerId?: string;
   error?: string;
+  profile?: {
+    mediaName: string;
+    dpi: number;
+    orientation: "portrait" | "landscape";
+    borderless: boolean;
+    photoPaper: boolean;
+    dnpTwoInchCut: boolean;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -55,6 +63,18 @@ type AgentState = {
   captures: CaptureRecord[];
   printJobs: PrintJobRecord[];
   uploadJobs: UploadJobRecord[];
+  printerConfig?: PrinterBridgeConfig;
+};
+
+type PrinterBridgeConfig = {
+  deviceId: string;
+  queueName: string;
+  kind: string;
+  autoConnect: boolean;
+  mediaName: string;
+  dpi: number;
+  borderless: boolean;
+  dnpCutQueueName?: string;
 };
 
 const initialState: AgentState = { captures: [], printJobs: [], uploadJobs: [] };
@@ -77,7 +97,13 @@ async function ensureRoot() {
 async function loadState(): Promise<AgentState> {
   await ensureRoot();
   try {
-    return JSON.parse(await readFile(statePath, "utf8")) as AgentState;
+    const stored = JSON.parse(await readFile(statePath, "utf8")) as Partial<AgentState>;
+    return {
+      captures: Array.isArray(stored.captures) ? stored.captures : [],
+      printJobs: Array.isArray(stored.printJobs) ? stored.printJobs : [],
+      uploadJobs: Array.isArray(stored.uploadJobs) ? stored.uploadJobs : [],
+      printerConfig: stored.printerConfig,
+    };
   } catch {
     return structuredClone(initialState);
   }
@@ -164,6 +190,38 @@ async function discoverSdkCameras() {
   return discovered;
 }
 
+function photoPrinterRank(device: DiscoveredDevice) {
+  if (device.status === "OFFLINE") return 100;
+  if (device.kind === "DNP") return 0;
+  if (device.kind === "EPSON") return 1;
+  if (device.kind === "OS_SPOOLER") return 2;
+  if (device.kind === "MOCK") return 3;
+  return 50;
+}
+
+async function ensurePrinterConnected(options: { requireDnp?: boolean; respectAutoConnect?: boolean } = {}) {
+  const [state, devices] = await Promise.all([loadState(), printer.discover()]);
+  const config = state.printerConfig;
+  if (options.respectAutoConnect && config?.autoConnect === false) {
+    return { device: undefined, config, health: await printer.getHealth() };
+  }
+
+  const candidates = devices
+    .filter((device) => device.type === "PRINTER" && (!options.requireDnp || device.kind === "DNP"))
+    .sort((left, right) => photoPrinterRank(left) - photoPrinterRank(right));
+  const configured = config
+    ? candidates.find((device) => device.id === config.deviceId || device.name === config.queueName)
+    : undefined;
+  const selected = configured ?? candidates.find((device) => device.status !== "OFFLINE");
+  if (!selected) {
+    if (options.requireDnp) throw new Error("Frame ini meminta DNP 2-inch cut, tetapi queue DNP belum ditemukan");
+    throw new Error("Tidak ada printer foto kompatibel yang ditemukan");
+  }
+
+  await printer.connect(selected.id);
+  return { device: selected, config, health: await printer.getHealth() };
+}
+
 async function processPrintJob(jobId: string) {
   const state = await loadState();
   const job = state.printJobs.find((candidate) => candidate.id === jobId);
@@ -173,14 +231,30 @@ async function processPrintJob(jobId: string) {
   await saveState(state);
 
   try {
-    const devices = await printer.discover();
-    if (!devices[0]) throw new Error("Tidak ada printer kompatibel yang ditemukan");
-    await printer.connect(devices[0].id);
+    const profile = job.profile ?? {
+      mediaName: "4x6",
+      dpi: 300,
+      orientation: "portrait" as const,
+      borderless: true,
+      photoPaper: true,
+      dnpTwoInchCut: false,
+    };
+    const { config, device } = await ensurePrinterConnected({ requireDnp: profile.dnpTwoInchCut });
+    const selectedConfig = config && device && (config.deviceId === device.id || config.queueName === device.name) ? config : undefined;
     const result = await printer.print({
       jobId: job.id,
       filePath: job.path,
       copies: job.copies,
-      profile: { mediaName: "4x6", dpi: 300, orientation: "portrait", borderless: true },
+      profile: {
+        mediaName: selectedConfig?.mediaName || profile.mediaName || "4x6",
+        dpi: selectedConfig?.dpi || profile.dpi || 300,
+        orientation: profile.orientation,
+        borderless: selectedConfig?.borderless ?? profile.borderless ?? true,
+        photoPaper: profile.photoPaper,
+        queueName: selectedConfig?.queueName ?? device?.name,
+        dnpCutQueueName: selectedConfig?.dnpCutQueueName,
+        dnpTwoInchCut: profile.dnpTwoInchCut,
+      },
     });
     job.status = result.status === "PRINTED" ? "PRINTED" : "PRINTING";
     job.spoolerId = result.spoolerId;
@@ -266,8 +340,15 @@ const server = createServer(async (req, res) => {
       const disk = await statfs(dataRoot).catch(() => null);
       const discovered = await printer.discover();
       const sdkCameras = await discoverSdkCameras();
+      const state = await loadState();
+      const connection = await ensurePrinterConnected({ respectAutoConnect: true }).catch(async (error) => ({
+        device: undefined,
+        config: state.printerConfig,
+        health: { status: "OFFLINE" as const, message: error instanceof Error ? error.message : "Auto-connect gagal", checkedAt: new Date().toISOString() },
+      }));
+      const consumables = connection.device ? await printer.getConsumables?.().catch(() => undefined) : undefined;
       json(res, 200, {
-        version: "0.1.0",
+        version: "0.2.0",
         boothCode,
         storage: { root: dataRoot, freeBytes: disk ? disk.bavail * disk.bsize : undefined },
         devices: [
@@ -275,7 +356,44 @@ const server = createServer(async (req, res) => {
           ...sdkCameras.map(({ device }) => device),
           ...discovered,
         ],
+        printerBridge: {
+          configured: connection.config ?? null,
+          connectedDeviceId: connection.device?.id ?? null,
+          connectedDeviceName: connection.device?.name ?? null,
+          health: connection.health,
+          sdk: {
+            dnp: Boolean(process.env.SNAPORE_DNP_SDK_BRIDGE),
+            epson: Boolean(process.env.SNAPORE_EPSON_SDK_BRIDGE),
+          },
+          paper: consumables ? { remaining: consumables.paperRemaining, capacity: consumables.paperCapacity, source: consumables.source } : null,
+        },
       });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/printer/configure") {
+      const input = await readJson<PrinterBridgeConfig>(req);
+      if (!input.deviceId || !input.queueName || !input.kind) throw new Error("Device, queue, dan jenis printer wajib dipilih");
+      if (!Number.isFinite(input.dpi) || input.dpi < 150 || input.dpi > 1200) throw new Error("DPI printer tidak valid");
+      const devices = await printer.discover();
+      const selected = devices.find((device) => device.id === input.deviceId || device.name === input.queueName);
+      if (!selected) throw new Error("Queue printer yang dipilih tidak ditemukan di Windows");
+      const config: PrinterBridgeConfig = {
+        deviceId: selected.id,
+        queueName: selected.name,
+        kind: selected.kind,
+        autoConnect: input.autoConnect !== false,
+        mediaName: input.mediaName || "4x6",
+        dpi: Math.floor(input.dpi),
+        borderless: input.borderless !== false,
+        dnpCutQueueName: input.dnpCutQueueName?.trim() || undefined,
+      };
+      const state = await loadState();
+      state.printerConfig = config;
+      await saveState(state);
+      if (config.autoConnect) await printer.connect(selected.id);
+      const health = await printer.getHealth();
+      json(res, 200, { ok: true, config, device: selected, health });
       return;
     }
 
@@ -368,6 +486,7 @@ const server = createServer(async (req, res) => {
         frameId: string;
         printJobId: string;
         uploadJobId: string;
+        dnpTwoInchCut?: boolean;
       }>(req);
       const sessionId = safeSegment(input.sessionId);
       const printJobId = safeSegment(input.printJobId);
@@ -385,6 +504,14 @@ const server = createServer(async (req, res) => {
           path: destination,
           copies: Math.max(1, Math.min(10, Math.floor(input.copies))),
           status: "QUEUED",
+          profile: {
+            mediaName: "4x6",
+            dpi: 300,
+            orientation: "portrait",
+            borderless: true,
+            photoPaper: true,
+            dnpTwoInchCut: input.dnpTwoInchCut === true,
+          },
           createdAt: now,
           updatedAt: now,
         };
@@ -404,7 +531,7 @@ const server = createServer(async (req, res) => {
       }
       await atomicWrite(
         join(sessionDirectory(sessionId), "manifest.json"),
-        Buffer.from(JSON.stringify({ schemaVersion: 1, sessionId, layoutId: input.layoutId, frameId: input.frameId, printJob, uploadJob }, null, 2)),
+        Buffer.from(JSON.stringify({ schemaVersion: 2, sessionId, layoutId: input.layoutId, frameId: input.frameId, dnpTwoInchCut: input.dnpTwoInchCut === true, printJob, uploadJob }, null, 2)),
       );
       await saveState(state);
       void (async () => {
@@ -424,6 +551,8 @@ const server = createServer(async (req, res) => {
 async function start() {
   await ensureRoot();
   setInterval(() => void processUploadQueue(), 10_000).unref();
+  setInterval(() => void ensurePrinterConnected({ respectAutoConnect: true }).catch(() => undefined), 5_000).unref();
+  void ensurePrinterConnected({ respectAutoConnect: true }).catch(() => undefined);
   server.listen(port, "127.0.0.1", () => {
     console.log(`Snapore device agent listening on http://127.0.0.1:${port}`);
     console.log(`Local photo directory: ${dataRoot}`);

@@ -23,12 +23,13 @@ Repository sekarang berisi vertical slice Snapore yang mencakup:
 - reset sesi terbayar melalui kode 6 digit sekali pakai dari Super Admin tanpa meminta pelanggan membayar ulang;
 - print job dan upload job terpisah yang dipicu saat konfirmasi cetak;
 - local persistent agent queue, atomic file write, SHA-256 checksum, dan background retry;
-- OS print spooler sebagai jalur default serta mock printer yang hanya aktif bila dipilih eksplisit untuk development;
+- Windows print spooler bridge dengan discovery queue fisik, auto-connect/reconnect, silent photo print, profil Epson/DNP, dan mock printer yang hanya aktif bila dipilih eksplisit untuk development;
+- opsi DNP DS-RX `2 inch cut` per frame, dengan routing ke SDK bridge vendor atau queue Windows khusus yang driver-nya mengaktifkan `2inch cut`;
 - server sync endpoint, protected gallery token, dan QR result setelah sinkronisasi;
 - fallback sinkronisasi langsung dari browser dengan retry otomatis ketika device agent tidak aktif, sehingga QR galeri tetap muncul setelah server menerima file;
 - Docker Compose PostgreSQL, unit tests, lint, typecheck, dan production build scripts.
 
-Integrasi printer/DSLR fisik masih membutuhkan model perangkat, driver vendor, dan hardware acceptance test. `OS_SPOOLER` adalah mode default dan sengaja gagal secara aman sampai printer nyata dikonfigurasi; mode `mock` hanya untuk pengujian yang diaktifkan secara eksplisit.
+Printer foto fisik tetap membutuhkan driver Windows resmi vendor dan hardware acceptance test. `OS_SPOOLER` adalah mode default, menemukan queue fisik secara otomatis, dan gagal secara aman jika queue offline atau profil cutting tidak siap; mode `mock` hanya untuk pengujian yang diaktifkan secara eksplisit.
 
 ## Menjalankan aplikasi lokal
 
@@ -61,12 +62,36 @@ Buka:
 - `http://localhost:3000/admin` untuk CMS tenant dan upload frame per booth;
 - `http://127.0.0.1:4545/health` untuk status local device agent.
 
+## Build aplikasi desktop Windows
+
+Versi desktop membungkus Next.js standalone dan device agent dalam Electron. Kamera laptop tetap memakai `getUserMedia()`, sedangkan discovery/print DNP dan Epson tetap berjalan melalui bridge PowerShell/SDK lokal.
+
+```bash
+# Jalankan versi desktop dari source (production runtime)
+npm run desktop:start
+
+# Buat installer NSIS dan executable portable Windows x64
+npm run desktop:dist
+```
+
+Hasil build tersedia di `release/`. Installer tidak menyertakan `.env`, password, atau upload development. Saat pertama dibuka, Snapore membuat `snapore.env` dan `desktop.config.json` di `%APPDATA%\Snapore Desktop`; isi `DATABASE_URL` di sana, kemudian buka ulang aplikasi. Detail seluruh command, pengaturan kiosk/fullscreen, direktori data, dan distribusi tersedia di [docs/desktop-build.md](docs/desktop-build.md).
+
 ### Auto-detect kamera dan SDK bridge
 
 - Kamera browser pada laptop, tablet, dan handphone dideteksi ulang saat perangkat dipasang/dilepas. Desktop memprioritaskan DSLR webcam utility atau webcam USB; perangkat mobile memprioritaskan kamera depan.
 - Canon EDSDK dijalankan melalui executable bridge lokal pada `SNAPORE_CANON_SDK_BRIDGE`. SDK vendor lain memakai `SNAPORE_CAMERA_SDK_BRIDGE` dan nama adapter pada `SNAPORE_CAMERA_SDK_KIND`.
 - Bridge menerima perintah `discover --json`, `connect --device <id>`, `disconnect --device <id>`, `capabilities --device <id> --json`, dan `capture --device <id> --output <file.jpg>`.
 - Jika bridge SDK gagal atau kamera dilepas, kiosk otomatis jatuh kembali ke MediaDevices browser. Binary dan lisensi SDK resmi vendor tetap harus dipasang pada komputer booth.
+
+### Auto-connect DNP dan Epson
+
+- Jalankan `npm run agent:dev` pada PC booth Windows. Agent memindai printer setiap 5 detik, mengabaikan printer virtual, memprioritaskan DNP lalu Epson, dan menyambungkan ulang queue preferred yang disimpan dari menu Admin → Devices.
+- Epson photo/inkjet menggunakan driver Windows untuk ukuran media, photo paper, borderless, dan color management. `SNAPORE_EPSON_SDK_BRIDGE` hanya perlu diisi jika tersedia executable SDK vendor khusus model printer tersebut.
+- Untuk DNP DS-RX1/RX1HS, frame bertanda **DNP 2″ CUT** hanya dicetak bila `SNAPORE_DNP_SDK_BRIDGE` tersedia atau `dnpCutQueueName` menunjuk queue Windows duplikat yang opsi driver **2inch cut**-nya aktif. Ini mencegah job strip tercetak sebagai foto 4×6 tanpa potong.
+- Protokol executable printer vendor: `print --queue <name> --file <path> --copies <n> --media <size> --dpi <n> --borderless <bool> --photo-paper <bool> --two-inch-cut <bool> --job-id <id>`. Tulis JSON `{ "spoolerId": "...", "status": "SPOOLING" }` ke stdout.
+- Telemetry SDK opsional memakai `status --queue <name> --json` dan mengembalikan `{ "paperRemaining": 120, "paperCapacity": 400 }`. Jika tidak tersedia, dashboard memakai counter `ESTIMATED` yang diisi operator dan berkurang satu lembar per copy; sumber `SENSOR`/`ESTIMATED` selalu ditampilkan.
+- Kiosk mengirim heartbeat kamera, printer, queue, dan status koneksi setiap lima detik. Dashboard tenant refresh otomatis setiap sepuluh detik dan menampilkan perangkat per booth, sisa media, peringatan menipis, serta notifikasi habis.
+- Pengaturan frame menyediakan toggle cutting khusus DNP. Card frame menampilkan badge **DNP 2″ CUT**, sehingga operator dapat melihat frame mana yang dipotong tanpa membuka editor.
 
 Akun development awal dibuat oleh seed menggunakan `SUPER_ADMIN_EMAIL` dan `SUPER_ADMIN_PASSWORD` dari `.env`. Akun tenant awal memakai `admin@snapore.local` dengan password awal yang sama. Ganti seluruh credential sebelum deployment.
 

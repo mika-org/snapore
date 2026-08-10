@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, Plus, Scissors, Trash2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import type { FrameCatalogItem, FrameCatalogResponse } from "@/domain/frame-catalog";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -215,7 +215,7 @@ export function FrameManager({ booths, canEdit = true, selectedBoothId, onBoothC
               </div>
               <div className="frame-card-info">
                 <div><h3>{frame.name}</h3><p>Grid {frame.variants.join("/")}</p></div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
                   {canEdit && (
                     <>
                       <button
@@ -245,6 +245,9 @@ export function FrameManager({ booths, canEdit = true, selectedBoothId, onBoothC
                       </button>
                     </>
                   )}
+                  {frame.dnpTwoInchCut
+                    ? <span className="dnp-cut-badge"><Scissors size={11} /> DNP 2″ CUT</span>
+                    : <span className="dnp-no-cut-badge">DNP NO CUT</span>}
                   <span className="database-badge">DB</span>
                 </div>
               </div>
@@ -269,6 +272,13 @@ export function FrameManager({ booths, canEdit = true, selectedBoothId, onBoothC
               <div className="frame-form-copy">
                 <label><span>Nama frame</span><input name="name" defaultValue={editingFrame?.name ?? ""} minLength={2} maxLength={80} required placeholder="Contoh: Midnight Bloom" /></label>
                 <label><span>Deskripsi</span><textarea name="description" defaultValue={editingFrame?.description ?? ""} maxLength={240} rows={3} placeholder="Karakter visual dan kegunaan frame" /></label>
+              </div>
+              <div className="dnp-cut-setting">
+                <div><Scissors size={20} /><span><strong>DNP DS-RX · 2 inch cut</strong><small>Tandai frame yang harus dipotong menjadi strip 2×6. Hanya diteruskan ke printer DNP; Epson dan printer umum mengabaikan opsi ini.</small></span></div>
+                <label className="toggle-control">
+                  <input name="dnpTwoInchCut" type="checkbox" value="true" defaultChecked={editingFrame?.dnpTwoInchCut ?? false} />
+                  <span>Aktifkan cutting untuk frame ini</span>
+                </label>
               </div>
               <div className="frame-upload-grid">
                 {uploads.map((upload) => {

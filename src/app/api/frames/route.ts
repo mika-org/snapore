@@ -1,13 +1,12 @@
 import { LayoutKind, UserRole, type Prisma } from "@/generated/prisma/client";
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
 import { z } from "zod";
 import type { FrameCatalogItem, FrameCatalogResponse } from "@/domain/frame-catalog";
 import { getLayoutSlots, type FrameAssetGeometry, type LayoutCount } from "@/domain/layout-geometry";
 import { getAuthorizedUser } from "@/lib/auth";
 import { reconcileBoothReadiness } from "@/lib/booth-readiness";
-import { normalizeFramePng, removeSavedFrame, saveFramePng, slugifyFrameName } from "@/lib/frame-storage";
+import { normalizeFramePng, removeSavedFrame, resolveFrameAssetPath, saveFramePng, slugifyFrameName } from "@/lib/frame-storage";
 import { detectTransparentFrameSlots } from "@/lib/frame-slot-detection";
 import { prisma } from "@/lib/prisma";
 
@@ -53,10 +52,7 @@ function queryFrames(where: Prisma.FrameWhereInput) {
 async function getVersionGeometry(version: FrameWithVersions["versions"][number], count: LayoutCount): Promise<FrameAssetGeometry> {
   const orientation = version.widthPx > version.heightPx ? "landscape" : "portrait";
   try {
-    const publicRoot = resolve(process.cwd(), "public");
-    const assetFile = resolve(publicRoot, version.assetPath.replace(/^[/\\]+/, ""));
-    if (assetFile !== publicRoot && !assetFile.startsWith(`${publicRoot}${sep}`)) throw new Error("Path frame tidak aman.");
-    const bytes = await readFile(assetFile);
+    const bytes = await readFile(resolveFrameAssetPath(version.assetPath));
     return {
       width: version.widthPx,
       height: version.heightPx,
@@ -91,6 +87,7 @@ async function toCatalogItem(frame: FrameWithVersions): Promise<FrameCatalogItem
       name: frame.name,
       description: frame.description,
       active: frame.active,
+      dnpTwoInchCut: frame.dnpTwoInchCut,
       assets: {},
       assetMeta: {},
       variants: [],
@@ -103,6 +100,7 @@ async function toCatalogItem(frame: FrameWithVersions): Promise<FrameCatalogItem
     name: frame.name,
     description: frame.description,
     active: frame.active,
+    dnpTwoInchCut: frame.dnpTwoInchCut,
     assets: rawAssets,
     assetMeta,
     variants,
@@ -164,6 +162,7 @@ export async function POST(request: Request) {
       name: formData.get("name"),
       description: formData.get("description") || undefined,
     });
+    const dnpTwoInchCut = String(formData.get("dnpTwoInchCut") ?? "false") === "true";
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Data frame tidak valid." }, { status: 400 });
     }
@@ -200,6 +199,7 @@ export async function POST(request: Request) {
           slug,
           name: parsed.data.name,
           description: parsed.data.description || null,
+          dnpTwoInchCut,
           active: true,
           sortOrder: (highestSortOrder._max.sortOrder ?? 0) + 1,
           versions: {
@@ -224,7 +224,7 @@ export async function POST(request: Request) {
           action: "FRAME_CREATED",
           entityType: "FRAME",
           entityId: created.id,
-          metadata: { slug, layouts: storedUploads.map((upload) => upload.kind) },
+          metadata: { slug, layouts: storedUploads.map((upload) => upload.kind), dnpTwoInchCut },
         },
       });
       return created;
@@ -271,6 +271,7 @@ export async function PUT(request: Request) {
       name: formData.get("name"),
       description: formData.get("description") || undefined,
     });
+    const dnpTwoInchCut = String(formData.get("dnpTwoInchCut") ?? "false") === "true";
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Data frame tidak valid." }, { status: 400 });
     }
@@ -319,6 +320,7 @@ export async function PUT(request: Request) {
         data: {
           name: parsed.data.name,
           description: parsed.data.description || null,
+          dnpTwoInchCut,
         },
       });
 
@@ -351,7 +353,7 @@ export async function PUT(request: Request) {
           action: "FRAME_UPDATED",
           entityType: "FRAME",
           entityId: frameId,
-          metadata: { name: parsed.data.name, updatedLayouts: storedUploads.map((u) => u.kind), removedLayouts: removedEntries.map((entry) => entry.kind) },
+          metadata: { name: parsed.data.name, updatedLayouts: storedUploads.map((u) => u.kind), removedLayouts: removedEntries.map((entry) => entry.kind), dnpTwoInchCut },
         },
       });
 

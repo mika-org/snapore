@@ -14,6 +14,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { LiveDashboardRefresh } from "@/components/live-dashboard-refresh";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -136,6 +137,7 @@ export default async function DashboardPage() {
       boothStatus: booth?.status ?? null,
       lastHeartbeatLabel: heartbeatLabel(booth?.lastHeartbeatAt ?? null, timeZone),
     }}>
+      <LiveDashboardRefresh />
       <header className="page-header">
         <div>
           <div className="eyebrow"><Zap size={13} fill="currentColor" /> {new Intl.DateTimeFormat("id-ID", { dateStyle: "full", timeZone }).format(new Date())}</div>
@@ -178,36 +180,45 @@ export default async function DashboardPage() {
             {booth ? <span className="live-badge"><span className={`status-dot ${statusClass(booth.status)}`} /> {booth.status}</span> : null}
           </div>
           <div className="panel-body">
-            {booth ? (
-              <>
-                <div className="booth-hero">
-                  <div>
-                    <div className="booth-name"><span><ScanLine size={18} /></span> {booth.name}</div>
-                    <div className="booth-meta">{booth.code}{booth.location ? ` · ${booth.location}` : ""} · {heartbeatLabel(booth.lastHeartbeatAt, timeZone) ?? "belum ada heartbeat"}</div>
+            {tenant?.booths.length ? tenant.booths.map((monitoredBooth) => {
+              const monitoredTimeZone = monitoredBooth.timezone || timeZone;
+              const paperWarnings = monitoredBooth.devices.filter((device) => device.paperCounter?.initialized && device.paperCounter.currentSheets <= device.paperCounter.lowThreshold);
+              return (
+                <section className="booth-monitor-block" key={monitoredBooth.id}>
+                  <div className="booth-hero">
+                    <div>
+                      <div className="booth-name"><span><ScanLine size={18} /></span> {monitoredBooth.name}</div>
+                      <div className="booth-meta">{monitoredBooth.code}{monitoredBooth.location ? ` · ${monitoredBooth.location}` : ""} · {heartbeatLabel(monitoredBooth.lastHeartbeatAt, monitoredTimeZone) ?? "belum ada heartbeat"}</div>
+                    </div>
+                    <span className="live-badge"><span className={`status-dot ${statusClass(monitoredBooth.status)}`} /> {monitoredBooth.status}</span>
                   </div>
-                </div>
-                <div className="device-grid">
-                  {booth.devices.map((device) => {
-                    const Icon = deviceIcon(device.type);
-                    const paper = device.paperCounter;
-                    const paperPercent = paper?.capacity ? Math.min(100, Math.round((paper.currentSheets / paper.capacity) * 100)) : null;
-                    const profile = device.cameraProfile
-                      ? `${device.cameraProfile.kind} · ${device.cameraProfile.width}×${device.cameraProfile.height}`
-                      : device.printerProfile
-                        ? `${device.printerProfile.kind} · ${device.printerProfile.mediaName} · ${device.printerProfile.dpi} DPI`
-                        : device.type;
-                    return (
-                      <article className="device-card" key={device.id}>
-                        <div className="device-card-top"><span><Icon size={16} /></span><span className="status-chip"><span className={`status-dot ${statusClass(device.status)}`} /> {device.status}</span></div>
-                        <h3>{device.name}{device.preferred ? " · preferred" : ""}</h3><p>{profile}</p>
-                        {paperPercent !== null ? <><div className="paper-meter"><span style={{ width: `${paperPercent}%` }} /></div><div className="paper-caption"><span>{paper?.currentSheets} sheets</span><span>{paperPercent}%</span></div></> : null}
-                      </article>
-                    );
-                  })}
-                  {booth.devices.length === 0 ? <div className="inline-empty">Belum ada perangkat yang terdaftar untuk booth ini.</div> : null}
-                </div>
-              </>
-            ) : <div className="inline-empty">Tenant belum memiliki booth. Super Admin perlu membuat booth terlebih dahulu.</div>}
+                  {paperWarnings.map((device) => <div className={`dashboard-paper-warning ${device.paperCounter!.currentSheets <= 0 ? "empty" : "low"}`} key={`paper-${device.id}`}><Printer size={15} /><strong>{device.name}: {device.paperCounter!.currentSheets <= 0 ? "kertas habis" : `tinggal ${device.paperCounter!.currentSheets} lembar`}</strong><span>{device.paperCounter!.sensorBacked ? "sensor" : "estimasi software"}</span></div>)}
+                  <div className="device-grid">
+                    {monitoredBooth.devices.map((device) => {
+                      const Icon = deviceIcon(device.type);
+                      const paper = device.paperCounter;
+                      const paperPercent = paper?.initialized && paper.capacity ? Math.min(100, Math.round((paper.currentSheets / paper.capacity) * 100)) : null;
+                      const paperLevel = paper?.initialized ? paper.currentSheets <= 0 ? "empty" : paper.currentSheets <= paper.lowThreshold ? "low" : "ok" : null;
+                      const profile = device.cameraProfile
+                        ? `${device.cameraProfile.kind} · ${device.cameraProfile.width}×${device.cameraProfile.height}`
+                        : device.printerProfile
+                          ? `${device.printerProfile.kind} · ${device.printerProfile.queueName ?? device.name} · ${device.printerProfile.mediaName} · ${device.printerProfile.dpi} DPI`
+                          : device.type;
+                      return (
+                        <article className={`device-card ${paperLevel ? `paper-${paperLevel}` : ""}`} key={device.id}>
+                          <div className="device-card-top"><span><Icon size={16} /></span><span className="status-chip"><span className={`status-dot ${statusClass(device.status)}`} /> {device.status}</span></div>
+                          <h3>{device.name}{device.preferred ? " · connected" : ""}</h3><p>{profile}</p>
+                          <small className="device-heartbeat-label">{heartbeatLabel(device.lastSeenAt, monitoredTimeZone) ?? "belum ada heartbeat perangkat"}</small>
+                          {paper && !paper.initialized ? <div className="paper-caption paper-unknown"><span>Paper counter belum diisi</span><span>UNKNOWN</span></div> : null}
+                          {paperPercent !== null ? <><div className="paper-meter"><span style={{ width: `${paperPercent}%` }} /></div><div className="paper-caption"><span>{paper?.currentSheets} / {paper?.capacity} lembar · {paper?.sensorBacked ? "sensor" : "estimasi"}</span><span>{paperPercent}%</span></div></> : null}
+                        </article>
+                      );
+                    })}
+                    {monitoredBooth.devices.length === 0 ? <div className="inline-empty">Belum ada heartbeat perangkat dari kiosk ini.</div> : null}
+                  </div>
+                </section>
+              );
+            }) : <div className="inline-empty">Tenant belum memiliki booth. Super Admin perlu membuat booth terlebih dahulu.</div>}
           </div>
         </article>
 

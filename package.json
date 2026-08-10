@@ -1,7 +1,10 @@
 {
   "name": "snapore-photobooth",
   "version": "0.1.0",
+  "description": "Snapore photobooth kiosk, monitoring, and local hardware bridge",
+  "author": "Snapore",
   "private": true,
+  "main": "desktop/main.cjs",
   "scripts": {
     "predev": "prisma generate",
     "dev": "next dev",
@@ -19,8 +22,15 @@
     "frames:generate": "node scripts/generate-frames.mjs",
     "voice:generate": "python scripts/generate-voiceovers.py",
     "agent:build": "tsc -p tsconfig.agent.json",
+    "agent:bundle:desktop": "esbuild device-agent/server.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist-desktop-agent/server.cjs --sourcemap",
     "agent:dev": "npm run agent:build && node dist-agent/server.js",
-    "agent:start": "npm run agent:build && node dist-agent/server.js"
+    "agent:start": "npm run agent:build && node dist-agent/server.js",
+    "desktop:prepare": "npm run build && npm run agent:bundle:desktop && node scripts/prepare-desktop-runtime.mjs",
+    "desktop:start": "npm run desktop:prepare && electron .",
+    "desktop:pack": "npm run desktop:prepare && electron-builder --win --dir --x64",
+    "desktop:dist": "npm run desktop:prepare && electron-builder --win nsis portable --x64",
+    "desktop:dist:installer": "npm run desktop:prepare && electron-builder --win nsis --x64",
+    "desktop:dist:portable": "npm run desktop:prepare && electron-builder --win portable --x64"
   },
   "dependencies": {
     "@prisma/adapter-pg": "latest",
@@ -40,6 +50,9 @@
     "@types/qrcode": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "eslint": "latest",
     "eslint-config-next": "latest",
     "prisma": "latest",

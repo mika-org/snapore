@@ -33,6 +33,10 @@ export type PrintRequest = {
     dpi: number;
     orientation: "portrait" | "landscape";
     borderless: boolean;
+    photoPaper: boolean;
+    queueName?: string;
+    dnpCutQueueName?: string;
+    dnpTwoInchCut: boolean;
   };
 };
 
@@ -43,6 +47,7 @@ export interface PrinterAdapter {
   disconnect(): Promise<void>;
   getCapabilities(): Promise<Record<string, unknown>>;
   getHealth(): Promise<DeviceHealth>;
+  getConsumables?(): Promise<{ paperRemaining: number; paperCapacity: number; source: "SENSOR" } | undefined>;
   print(request: PrintRequest): Promise<{ spoolerId: string; status: "PRINTED" | "SPOOLING" }>;
   cancel(jobId: string): Promise<boolean>;
 }

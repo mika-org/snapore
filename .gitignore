@@ -4,6 +4,10 @@ node_modules/
 out/
 coverage/
 dist-agent/
+dist-desktop-agent/
+desktop-runtime/
+release/
+desktop/assets/icon.png
 .env
 .env.local
 src/generated/prisma/

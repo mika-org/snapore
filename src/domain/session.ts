@@ -18,7 +18,8 @@ export type KioskStep = (typeof kioskSteps)[number];
 export type KioskEvent =
   | "START"
   | "PAYMENT_COMPLETE"
-  | "BYPASS_TO_FRAME"
+  | "BYPASS_PAYMENT"
+  | "CHANGE_LAYOUT"
   | "SELECT_LAYOUT"
   | "SELECT_FRAME"
   | "CAPTURE_COMPLETE"
@@ -30,10 +31,10 @@ export type KioskEvent =
   | "RESET";
 
 const transitions: Record<KioskStep, Partial<Record<KioskEvent, KioskStep>>> = {
-  IDLE: { START: "PAYMENT", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
-  PAYMENT: { PAYMENT_COMPLETE: "LAYOUT", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
-  LAYOUT: { SELECT_LAYOUT: "FRAME", BYPASS_TO_FRAME: "FRAME", RESET: "IDLE" },
-  FRAME: { SELECT_FRAME: "CAPTURE", RESET: "IDLE" },
+  IDLE: { START: "PAYMENT", BYPASS_PAYMENT: "LAYOUT", RESET: "IDLE" },
+  PAYMENT: { PAYMENT_COMPLETE: "LAYOUT", BYPASS_PAYMENT: "LAYOUT", RESET: "IDLE" },
+  LAYOUT: { SELECT_LAYOUT: "FRAME", RESET: "IDLE" },
+  FRAME: { SELECT_FRAME: "CAPTURE", CHANGE_LAYOUT: "LAYOUT", RESET: "IDLE" },
   CAPTURE: { CAPTURE_COMPLETE: "REVIEW", RETAKE_COMPLETE: "REVIEW", RESET: "IDLE" },
   REVIEW: { RETAKE_PHOTO: "CAPTURE", APPROVE_PHOTOS: "CHECKOUT", RESET: "IDLE" },
   CHECKOUT: { CONFIRM_PRINT: "PRINTING", RESET: "IDLE" },
@@ -73,6 +74,7 @@ export const framePresets: FramePreset[] = [
     name: "Sunset Punch",
     description: "Frame coral dengan aksen matahari dan tipografi Snapore.",
     active: true,
+    dnpTwoInchCut: false,
     variants: [2, 4, 6, 8],
     createdAt: "",
     tone: "coral",
@@ -85,6 +87,7 @@ export const framePresets: FramePreset[] = [
     name: "Electric Mint",
     description: "Frame hijau mint dengan aksen biru elektrik.",
     active: true,
+    dnpTwoInchCut: false,
     variants: [2, 4, 6, 8],
     createdAt: "",
     tone: "mint",
@@ -97,6 +100,7 @@ export const framePresets: FramePreset[] = [
     name: "Blue Hour",
     description: "Frame biru elektrik dengan tipografi terang dan aksen coral.",
     active: true,
+    dnpTwoInchCut: false,
     variants: [2, 4, 6, 8],
     createdAt: "",
     tone: "blue",

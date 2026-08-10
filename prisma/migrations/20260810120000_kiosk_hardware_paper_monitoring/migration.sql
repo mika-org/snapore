@@ -1,0 +1,4 @@
+ALTER TABLE "PaperCounter"
+ADD COLUMN "lowThreshold" INTEGER NOT NULL DEFAULT 20,
+ADD COLUMN "sensorBacked" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "lastReportedAt" TIMESTAMP(3);

@@ -35,7 +35,7 @@ export default async function AdminPage() {
             pricingRules: { where: { active: true }, orderBy: { createdAt: "asc" }, take: 1 },
             devices: {
               orderBy: [{ preferred: "desc" }, { createdAt: "asc" }],
-              include: { cameraProfile: true, printerProfile: true },
+              include: { cameraProfile: true, printerProfile: true, paperCounter: true },
             },
           },
         },
@@ -67,10 +67,29 @@ export default async function AdminPage() {
       layoutCounts: readiness?.layoutCounts ?? [],
       devices: booth.devices.map((device) => ({
         id: device.id,
+        fingerprint: device.fingerprint,
         name: device.name,
         type: device.type,
         status: device.status,
         preferred: device.preferred,
+        driverName: device.driverName,
+        printer: device.printerProfile ? {
+          kind: device.printerProfile.kind,
+          queueName: device.printerProfile.queueName,
+          dnpCutQueueName: device.printerProfile.dnpCutQueueName,
+          autoConnect: device.printerProfile.autoConnect,
+          mediaName: device.printerProfile.mediaName,
+          dpi: device.printerProfile.dpi,
+          borderless: device.printerProfile.borderless,
+        } : null,
+        paper: device.paperCounter ? {
+          currentSheets: device.paperCounter.currentSheets,
+          capacity: device.paperCounter.capacity,
+          lowThreshold: device.paperCounter.lowThreshold,
+          initialized: device.paperCounter.initialized,
+          sensorBacked: device.paperCounter.sensorBacked,
+          updatedAt: device.paperCounter.updatedAt.toISOString(),
+        } : null,
         detail: device.cameraProfile
           ? `${device.cameraProfile.kind} · ${device.cameraProfile.width}×${device.cameraProfile.height}`
           : device.printerProfile

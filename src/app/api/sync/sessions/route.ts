@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
+import { remainingPaperAfterPrint } from "@/domain/paper-counter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -166,10 +167,21 @@ export async function POST(request: Request) {
       const manifestPrintJob = manifest.printJob as { id?: string; copies?: number; status?: string } | undefined;
       if (manifestPrintJob?.id) {
         const device = await prisma.device.findFirst({ where: { boothId: booth.id, type: "PRINTER", preferred: true }, orderBy: { createdAt: "asc" } });
-        await prisma.printJob.upsert({
-          where: { idempotencyKey: manifestPrintJob.id },
-          update: { status: manifestPrintJob.status === "FAILED" ? "FAILED" : "PRINTED", printedAt: new Date(), deviceId: device?.id },
-          create: { id: manifestPrintJob.id, orderId: order.id, compositionId: composition.id, deviceId: device?.id, idempotencyKey: manifestPrintJob.id, copies: Math.max(1, manifestPrintJob.copies ?? order.copies), status: manifestPrintJob.status === "FAILED" ? "FAILED" : "PRINTED", printedAt: new Date() },
+        const copies = Math.max(1, manifestPrintJob.copies ?? order.copies);
+        const printFailed = manifestPrintJob.status === "FAILED";
+        await prisma.$transaction(async (tx) => {
+          const existingJob = await tx.printJob.findUnique({ where: { idempotencyKey: manifestPrintJob.id! }, select: { status: true } });
+          await tx.printJob.upsert({
+            where: { idempotencyKey: manifestPrintJob.id! },
+            update: { status: printFailed ? "FAILED" : "PRINTED", printedAt: printFailed ? null : new Date(), deviceId: device?.id },
+            create: { id: manifestPrintJob.id!, orderId: order.id, compositionId: composition.id, deviceId: device?.id, idempotencyKey: manifestPrintJob.id!, copies, status: printFailed ? "FAILED" : "PRINTED", printedAt: printFailed ? null : new Date() },
+          });
+          if (!printFailed && existingJob?.status !== "PRINTED" && device) {
+            const paper = await tx.paperCounter.findUnique({ where: { deviceId: device.id }, select: { currentSheets: true } });
+            if (paper) {
+              await tx.paperCounter.update({ where: { deviceId: device.id }, data: { currentSheets: remainingPaperAfterPrint(paper.currentSheets, copies) } });
+            }
+          }
         });
       }
     }

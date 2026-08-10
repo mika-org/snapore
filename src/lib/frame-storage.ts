@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import sharp from "sharp";
 import type { LayoutCount } from "@/domain/layout-geometry";
 import { detectTransparentFrameSlots } from "./frame-slot-detection";
@@ -8,6 +8,32 @@ import { detectTransparentFrameSlots } from "./frame-slot-detection";
 export const FRAME_WIDTH = 1200;
 export const FRAME_HEIGHT = 1800;
 export const MAX_FRAME_BYTES = 10 * 1024 * 1024;
+export const FRAME_ASSET_ROUTE_PREFIX = "/api/frame-assets/";
+
+export function getFrameStorageRoot() {
+  return resolve(/* turbopackIgnore: true */ process.env.SNAPORE_FRAME_STORAGE_DIR ?? join(process.cwd(), "public", "uploads", "frames"));
+}
+
+function resolveWithin(root: string, segments: string[]) {
+  const target = resolve(root, ...segments);
+  if (target === root || !target.startsWith(`${root}${sep}`)) throw new Error("Path frame tidak aman.");
+  return target;
+}
+
+export function resolveFrameAssetSegments(segments: string[]) {
+  if (segments.length < 1 || segments.some((segment) => !/^[a-zA-Z0-9._-]{1,180}$/.test(segment) || segment === "." || segment === "..")) {
+    throw new Error("Path frame tidak valid.");
+  }
+  return resolveWithin(getFrameStorageRoot(), segments);
+}
+
+export function resolveFrameAssetPath(assetPath: string) {
+  if (assetPath.startsWith(FRAME_ASSET_ROUTE_PREFIX)) {
+    return resolveFrameAssetSegments(assetPath.slice(FRAME_ASSET_ROUTE_PREFIX.length).split("/"));
+  }
+  const publicRoot = resolve(process.cwd(), "public");
+  return resolveWithin(publicRoot, assetPath.replace(/^[/\\]+/, "").split(/[\\/]+/));
+}
 
 export function slugifyFrameName(name: string) {
   return name
@@ -66,8 +92,8 @@ export async function normalizeFramePng(file: File, count: LayoutCount) {
 }
 
 export async function saveFramePng(tenantId: string, boothId: string, slug: string, count: LayoutCount, bytes: Buffer, checksum: string) {
-  const relativeDirectory = join("uploads", "frames", tenantId, boothId, slug);
-  const absoluteDirectory = join(process.cwd(), "public", relativeDirectory);
+  const relativeDirectory = join(tenantId, boothId, slug);
+  const absoluteDirectory = resolveWithin(getFrameStorageRoot(), [tenantId, boothId, slug]);
   await mkdir(absoluteDirectory, { recursive: true });
 
   const fileName = `grid-${count}-${checksum.slice(0, 12)}-${randomUUID()}.png`;
@@ -76,7 +102,7 @@ export async function saveFramePng(tenantId: string, boothId: string, slug: stri
 
   return {
     absolutePath,
-    assetPath: `/${relativeDirectory.replaceAll("\\", "/")}/${fileName}`,
+    assetPath: `${FRAME_ASSET_ROUTE_PREFIX}${relativeDirectory.replaceAll("\\", "/")}/${fileName}`,
   };
 }
 

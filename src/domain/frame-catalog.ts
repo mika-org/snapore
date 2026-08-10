@@ -9,6 +9,7 @@ export type FrameCatalogItem = {
   name: string;
   description: string | null;
   active: boolean;
+  dnpTwoInchCut: boolean;
   assets: FrameAssets;
   assetMeta?: FrameAssetMetadata;
   variants: LayoutCount[];

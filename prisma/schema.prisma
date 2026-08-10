@@ -273,6 +273,9 @@ model PrinterProfile {
   id             String      @id @default(dbgenerated("(gen_random_uuid())::text"))
   deviceId       String      @unique
   kind           PrinterKind
+  queueName      String?
+  dnpCutQueueName String?
+  autoConnect    Boolean     @default(true)
   mediaName      String      @default("4x6")
   widthInches    Decimal     @default(4) @db.Decimal(6, 2)
   heightInches   Decimal     @default(6) @db.Decimal(6, 2)
@@ -287,13 +290,17 @@ model PrinterProfile {
 }
 
 model PaperCounter {
-  id            String   @id @default(dbgenerated("(gen_random_uuid())::text"))
-  deviceId      String   @unique
-  currentSheets Int      @default(0)
-  capacity      Int      @default(400)
-  resetAt       DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  id             String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  deviceId       String    @unique
+  currentSheets  Int       @default(0)
+  capacity       Int       @default(400)
+  lowThreshold   Int       @default(20)
+  initialized    Boolean   @default(false)
+  sensorBacked   Boolean   @default(false)
+  lastReportedAt DateTime?
+  resetAt        DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  device         Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
 
 model Layout {
@@ -354,6 +361,7 @@ model Frame {
   slug        String
   name        String
   description String?
+  dnpTwoInchCut Boolean      @default(false)
   active      Boolean        @default(true)
   sortOrder   Int            @default(0)
   activeFrom  DateTime?

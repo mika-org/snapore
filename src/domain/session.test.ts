@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateOrder, transitionSession } from "./session";
+import { calculateOrder, layoutPresets, transitionSession } from "./session";
 
 describe("kiosk session state machine", () => {
   it("menjalankan happy path", () => {
@@ -18,10 +18,14 @@ describe("kiosk session state machine", () => {
     expect(() => transitionSession("IDLE", "CONFIRM_PRINT")).toThrow(/tidak valid/);
   });
 
-  it("mendukung bypass pembayaran langsung ke pilih frame", () => {
-    expect(transitionSession("IDLE", "BYPASS_TO_FRAME")).toBe("FRAME");
-    expect(transitionSession("PAYMENT", "BYPASS_TO_FRAME")).toBe("FRAME");
-    expect(transitionSession("LAYOUT", "BYPASS_TO_FRAME")).toBe("FRAME");
+  it("mengarahkan bypass pembayaran ke pilihan jumlah foto", () => {
+    expect(transitionSession("IDLE", "BYPASS_PAYMENT")).toBe("LAYOUT");
+    expect(transitionSession("PAYMENT", "BYPASS_PAYMENT")).toBe("LAYOUT");
+    expect(transitionSession("FRAME", "CHANGE_LAYOUT")).toBe("LAYOUT");
+  });
+
+  it("menyediakan pilihan Grid 2x, 4x, 6x, dan 8x", () => {
+    expect(layoutPresets.map((layout) => layout.count)).toEqual([2, 4, 6, 8]);
   });
 
   it.each([2, 4, 6, 8])("retake satu slot pada grid %i kembali ke review", () => {

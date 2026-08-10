@@ -1,0 +1,46 @@
+appId: id.snapore.photobooth
+productName: Snapore Desktop
+asar: true
+npmRebuild: false
+compression: normal
+afterPack: desktop/after-pack.cjs
+
+directories:
+  output: release
+  buildResources: desktop/assets
+
+files:
+  - desktop/main.cjs
+  - desktop/desktop.config.json
+  - desktop/assets/icon.png
+  - package.json
+  - "!node_modules/**/*"
+
+extraResources:
+  - from: desktop/snapore.env.example
+    to: config/snapore.env.example
+
+win:
+  executableName: Snapore
+  icon: desktop/assets/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  artifactName: Snapore-Desktop-Setup-${version}-${arch}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Snapore Desktop
+  uninstallDisplayName: Snapore Desktop
+
+portable:
+  artifactName: Snapore-Desktop-Portable-${version}-${arch}.${ext}
+  requestExecutionLevel: user
