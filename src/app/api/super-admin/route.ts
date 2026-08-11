@@ -3,10 +3,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { evaluateBoothResources } from "@/domain/booth-readiness";
 import { getBoothVoiceEnabled, mergeBoothVoiceConfig } from "@/domain/booth-voice-config";
+import { classifySession, isTestingSession } from "@/domain/session-classification";
 import { isSessionResettable, SESSION_RESET_CODE_TTL_MINUTES } from "@/domain/session-reset";
 import { BoothStatus, CameraKind, DeviceStatus, DeviceType, PaymentMode, TenantStatus, UserRole, XenditEnvironment } from "@/generated/prisma/client";
 import { getAuthorizedUser } from "@/lib/auth";
 import { reconcileBoothReadiness, setBoothEnabled } from "@/lib/booth-readiness";
+import { isTransientDatabaseError, withTransientDatabaseRetry } from "@/lib/database-resilience";
 import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret, hashPassword, maskSecret, signValue } from "@/lib/security";
 
@@ -15,6 +17,14 @@ export const dynamic = "force-dynamic";
 
 const money = z.coerce.number().min(0).max(1_000_000_000);
 const percentage = z.coerce.number().min(0).max(100);
+const timezone = z.string().trim().min(3).max(64).refine((value) => {
+  try {
+    new Intl.DateTimeFormat("id-ID", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}, "Zona waktu tidak valid.");
 
 const actionSchema = z.discriminatedUnion("action", [
   z.object({
@@ -64,6 +74,15 @@ const actionSchema = z.discriminatedUnion("action", [
     code: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]+$/).min(2).max(30),
     name: z.string().trim().min(2).max(80),
     location: z.string().trim().max(120).optional(),
+    timezone: timezone.default("Asia/Jakarta"),
+  }),
+  z.object({
+    action: z.literal("updateBoothDetails"),
+    boothId: z.uuid(),
+    code: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]+$/).min(2).max(30),
+    name: z.string().trim().min(2).max(80),
+    location: z.string().trim().max(120).optional(),
+    timezone,
   }),
   z.object({
     action: z.literal("updateBoothStatus"),
@@ -121,17 +140,36 @@ async function getOverviewResponse(request?: Request) {
   const to = toValue && !Number.isNaN(Date.parse(toValue)) ? new Date(toValue) : null;
   const orderDateWhere = from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
   const sessionDateWhere = from || to ? { startedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
-  const [tenants, users, booths, orders, sessions, layouts, activeFrames] = await Promise.all([
+  const [tenants, users, booths] = await Promise.all([
     prisma.tenant.findMany({
       orderBy: { createdAt: "asc" },
       include: { paymentConfig: true, _count: { select: { users: true, booths: true, frames: true } } },
     }),
     prisma.user.findMany({ orderBy: { createdAt: "desc" }, select: { id: true, tenantId: true, name: true, email: true, role: true, active: true, createdAt: true } }),
-    prisma.booth.findMany({ orderBy: { createdAt: "asc" }, include: { tenant: { select: { name: true } }, setting: { select: { config: true } }, devices: { orderBy: { createdAt: "asc" } } } }),
+    prisma.booth.findMany({ orderBy: { createdAt: "asc" }, include: { tenant: { select: { name: true } }, setting: { select: { config: true } }, devices: { orderBy: [{ preferred: "desc" }, { lastSeenAt: "desc" }, { createdAt: "asc" }] } } }),
+  ]);
+  const [layouts, activeFrames] = await Promise.all([
+    prisma.layout.findMany({
+      where: { active: true, versions: { some: { published: true } } },
+      select: { kind: true },
+    }),
+    prisma.frame.findMany({
+      where: {
+        active: true,
+        AND: [
+          { OR: [{ activeFrom: null }, { activeFrom: { lte: now } }] },
+          { OR: [{ activeUntil: null }, { activeUntil: { gt: now } }] },
+        ],
+      },
+      select: { tenantId: true, boothId: true, versions: { where: { published: true }, select: { layoutKind: true } } },
+    }),
+  ]);
+  const [orders, sessions] = await Promise.all([
     prisma.order.findMany({
       where: orderDateWhere,
       include: {
         session: { include: { booth: { include: { tenant: { select: { id: true, name: true } } } } } },
+        payment: true,
         printJobs: { orderBy: { queuedAt: "asc" }, take: 1, include: { device: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -160,24 +198,15 @@ async function getOverviewResponse(request?: Request) {
         _count: { select: { photos: true } },
       },
     }),
-    prisma.layout.findMany({
-      where: { active: true, versions: { some: { published: true } } },
-      select: { kind: true },
-    }),
-    prisma.frame.findMany({
-      where: {
-        active: true,
-        AND: [
-          { OR: [{ activeFrom: null }, { activeFrom: { lte: now } }] },
-          { OR: [{ activeUntil: null }, { activeUntil: { gt: now } }] },
-        ],
-      },
-      select: { tenantId: true, boothId: true, versions: { where: { published: true }, select: { layoutKind: true } } },
-    }),
   ]);
 
   const salesMap = new Map<string, { tenantId: string; tenant: string; boothId: string; booth: string; deviceId: string | null; device: string; orders: number; prints: number; gross: number; tax: number; printCost: number; paymentFee: number; netProfit: number }>();
+  let excludedTestingOrders = 0;
   for (const order of orders) {
+    if (isTestingSession({ paymentProvider: order.payment?.provider, paymentMetadata: order.payment?.metadata, sessionMetadata: order.session.metadata })) {
+      excludedTestingOrders += 1;
+      continue;
+    }
     const booth = order.session.booth;
     const device = order.printJobs[0]?.device ?? null;
     const key = `${booth.id}:${device?.id ?? "unassigned"}`;
@@ -260,15 +289,18 @@ async function getOverviewResponse(request?: Request) {
       code: booth.code,
       name: booth.name,
       location: booth.location,
+      timezone: booth.timezone,
       status: booth.status,
+      lastHeartbeatAt: booth.lastHeartbeatAt,
       kioskEnabled: booth.kioskEnabled,
       voiceEnabled: getBoothVoiceEnabled(booth.setting?.config),
       kioskUrl: `/kiosk/${booth.id}`,
-      devices: booth.devices.map((device) => ({ id: device.id, name: device.name, type: device.type, status: device.status })),
+      devices: booth.devices.map((device) => ({ id: device.id, name: device.name, type: device.type, status: device.status, preferred: device.preferred, driverName: device.driverName, firmware: device.firmware, lastSeenAt: device.lastSeenAt })),
     })),
     sessions: sessions.map((session) => {
       const activeReset = session.resetCodes[0] ?? null;
       const paymentStatus = session.order?.payment?.status;
+      const classification = classifySession({ paymentProvider: session.order?.payment?.provider, paymentMetadata: session.order?.payment?.metadata, sessionMetadata: session.metadata });
       const resettable = isSessionResettable({ status: session.status, hasGallery: Boolean(session.gallery), printJobCount: session.order?.printJobs.length ?? 0 })
         && (!paymentStatus || ["PAID", "NOT_REQUIRED"].includes(paymentStatus));
       return {
@@ -288,6 +320,9 @@ async function getOverviewResponse(request?: Request) {
         copies: session.order?.copies ?? 0,
         total: number(session.order?.total ?? 0),
         paymentStatus: paymentStatus ?? "NOT_REQUIRED",
+        paymentProvider: session.order?.payment?.provider ?? null,
+        sessionKind: classification.kind,
+        testingReason: classification.reason,
         uploadStatus: session.uploadJobs[0]?.status ?? null,
         assets: session.assets.map((asset) => ({
           id: asset.id,
@@ -305,14 +340,25 @@ async function getOverviewResponse(request?: Request) {
       };
     }),
     sales: Array.from(salesMap.values()),
+    salesSummary: { excludedTestingOrders },
   });
 }
 
 export async function GET(request: Request) {
   try {
-    return await getOverviewResponse(request);
+    return await withTransientDatabaseRetry(() => getOverviewResponse(request), {
+      retries: 1,
+      delayMs: 250,
+      onRetry: (_error, retryNumber) => console.warn(`GET /api/super-admin: koneksi database terputus, retry ${retryNumber}/1.`),
+    });
   } catch (error) {
     console.error("GET /api/super-admin failed", error);
+    if (isTransientDatabaseError(error)) {
+      return NextResponse.json(
+        { error: "Database sementara tidak dapat dijangkau. Periksa koneksi server lalu coba lagi.", code: "DATABASE_UNAVAILABLE" },
+        { status: 503, headers: { "Retry-After": "2" } },
+      );
+    }
     return NextResponse.json(
       { error: "Data Super Admin gagal dimuat.", detail: error instanceof Error ? error.message : "Internal server error" },
       { status: 500 },
@@ -441,7 +487,7 @@ export async function POST(request: Request) {
           code: data.code,
           name: data.name,
           location: data.location || null,
-          timezone: "Asia/Jakarta",
+          timezone: data.timezone,
           status: BoothStatus.OFFLINE,
           setting: { create: { countdownSeconds: 3, maxRetakes: 1, paymentMode: PaymentMode.DISABLED } },
           devices: {
@@ -452,6 +498,22 @@ export async function POST(request: Request) {
       await reconcileBoothReadiness(booth.id);
       await prisma.auditLog.create({ data: { userId: actor.id, boothId: booth.id, action: "BOOTH_CREATED", entityType: "BOOTH", entityId: booth.id } });
       return NextResponse.json({ id: booth.id, kioskUrl: `/kiosk/${booth.id}` }, { status: 201 });
+    }
+
+    if (data.action === "updateBoothDetails") {
+      const existing = await prisma.booth.findUnique({ where: { id: data.boothId }, select: { id: true, code: true, name: true } });
+      if (!existing) return NextResponse.json({ error: "Booth tidak ditemukan." }, { status: 404 });
+      const codeOwner = await prisma.booth.findFirst({ where: { code: data.code, NOT: { id: data.boothId } }, select: { id: true } });
+      if (codeOwner) return NextResponse.json({ error: `Kode '${data.code}' sudah digunakan booth lain.` }, { status: 400 });
+
+      const booth = await prisma.booth.update({
+        where: { id: data.boothId },
+        data: { code: data.code, name: data.name, location: data.location || null, timezone: data.timezone },
+      });
+      await prisma.auditLog.create({
+        data: { userId: actor.id, boothId: booth.id, action: "BOOTH_DETAILS_UPDATED", entityType: "BOOTH", entityId: booth.id, metadata: { before: existing, after: { code: booth.code, name: booth.name, location: booth.location, timezone: booth.timezone } } },
+      });
+      return NextResponse.json({ id: booth.id, message: `Data kiosk ${booth.name} berhasil diperbarui.` });
     }
 
     if (data.action === "updateBoothStatus") {

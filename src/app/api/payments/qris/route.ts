@@ -120,10 +120,11 @@ export async function POST(request: Request) {
 
     if (!encryptedApiKey) return NextResponse.json({ error: "API key Xendit belum dikonfigurasi." }, { status: 409 });
     const xendit = await createQrisPayment({ encryptedApiKey, amount: finance.total, referenceId: input.sessionId, description: `${booth.name} photo print` });
+    const paymentMetadata = { qrString: xendit.qrString, expiresAt: xendit.expiresAt, environment: paymentConfig?.environment ?? "LIVE" };
     await prisma.payment.upsert({
       where: { orderId: order.id },
-      update: { mode: PaymentMode.ONLINE_PROVIDER, status: PaymentStatus.PENDING, provider: "XENDIT", providerReference: xendit.id, amount: finance.total, expiresAt: new Date(xendit.expiresAt), metadata: { qrString: xendit.qrString, expiresAt: xendit.expiresAt } },
-      create: { orderId: order.id, mode: PaymentMode.ONLINE_PROVIDER, status: PaymentStatus.PENDING, provider: "XENDIT", providerReference: xendit.id, amount: finance.total, expiresAt: new Date(xendit.expiresAt), metadata: { qrString: xendit.qrString, expiresAt: xendit.expiresAt } },
+      update: { mode: PaymentMode.ONLINE_PROVIDER, status: PaymentStatus.PENDING, provider: "XENDIT", providerReference: xendit.id, amount: finance.total, expiresAt: new Date(xendit.expiresAt), metadata: paymentMetadata },
+      create: { orderId: order.id, mode: PaymentMode.ONLINE_PROVIDER, status: PaymentStatus.PENDING, provider: "XENDIT", providerReference: xendit.id, amount: finance.total, expiresAt: new Date(xendit.expiresAt), metadata: paymentMetadata },
     });
     return NextResponse.json({ paymentRequired: true, status: PaymentStatus.PENDING, qrString: xendit.qrString, expiresAt: xendit.expiresAt, finance });
   } catch (error) {

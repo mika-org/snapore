@@ -6,11 +6,13 @@ import {
   BarChart3,
   Building2,
   CalendarRange,
+  Camera,
   ChevronRight,
   CircleDollarSign,
   Copy,
   CreditCard,
   Download,
+  FlaskConical,
   ImagePlus,
   Images,
   KeyRound,
@@ -18,10 +20,13 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  MapPin,
   Monitor,
   Pencil,
   Power,
+  Printer,
   Plus,
+  Radio,
   RefreshCw,
   RotateCcw,
   Settings2,
@@ -56,10 +61,30 @@ type Tenant = {
 
 type ManagedUser = { id: string; tenantId: string | null; name: string; email: string; role: string; active: boolean };
 
+type Booth = {
+  id: string;
+  tenantId: string;
+  tenant: string;
+  code: string;
+  name: string;
+  location: string | null;
+  timezone: string;
+  status: string;
+  lastHeartbeatAt: string | null;
+  kioskEnabled: boolean;
+  voiceEnabled: boolean;
+  maintenanceMode: boolean;
+  resourceReady: boolean;
+  readinessReason: string | null;
+  layoutCounts: number[];
+  kioskUrl: string;
+  devices: Array<{ id: string; name: string; type: string; status: string; preferred: boolean; driverName: string | null; firmware: string | null; lastSeenAt: string | null }>;
+};
+
 type Overview = {
   tenants: Tenant[];
   users: ManagedUser[];
-  booths: Array<{ id: string; tenantId: string; tenant: string; code: string; name: string; location: string | null; status: string; kioskEnabled: boolean; voiceEnabled: boolean; maintenanceMode: boolean; resourceReady: boolean; readinessReason: string | null; layoutCounts: number[]; kioskUrl: string; devices: Array<{ id: string; name: string; type: string; status: string }> }>;
+  booths: Booth[];
   sessions: Array<{
     id: string;
     publicCode: string;
@@ -77,18 +102,25 @@ type Overview = {
     copies: number;
     total: number;
     paymentStatus: string;
+    paymentProvider: string | null;
+    sessionKind: "TESTING" | "PRODUCTION";
+    testingReason: string | null;
     uploadStatus: string | null;
     assets: Array<{ id: string; kind: string; mimeType: string; byteSize: number; slotIndex: number | null }>;
     resettable: boolean;
     activeReset: { code: string | null; expiresAt: string; reason: string | null } | null;
   }>;
   sales: Array<{ tenant: string; booth: string; device: string; orders: number; prints: number; gross: number; tax: number; printCost: number; paymentFee: number; netProfit: number }>;
+  salesSummary: { excludedTestingOrders: number };
 };
 
 type AdminView = "overview" | "create-tenant" | "tenants" | "users" | "booths" | "sessions" | "payments" | "sales";
 type PhotoResultFilter = "ALL" | "SUCCESS" | "FAILED";
+type SessionKindFilter = "ALL" | "PRODUCTION" | "TESTING";
 
-const emptyOverview: Overview = { tenants: [], users: [], booths: [], sessions: [], sales: [] };
+const emptyOverview: Overview = { tenants: [], users: [], booths: [], sessions: [], sales: [], salesSummary: { excludedTestingOrders: 0 } };
+
+const timezoneOptions = ["Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura", "Asia/Singapore"].map((value) => ({ value, label: value }));
 
 const menuItems: Array<{ id: AdminView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -106,8 +138,8 @@ const viewCopy: Record<AdminView, { eyebrow: string; title: string; description:
   "create-tenant": { eyebrow: "Tenant onboarding", title: "Tambah tenant", description: "Buat workspace bisnis baru sebelum menambahkan user, booth, frame, dan konfigurasi pembayaran." },
   tenants: { eyebrow: "Tenant directory", title: "Semua tenant", description: "Buka workspace setiap tenant dan lihat kepemilikan user, booth, serta frame." },
   users: { eyebrow: "Identity & access", title: "User accounts", description: "Tambahkan akun global atau akun yang hanya memiliki akses ke satu tenant." },
-  booths: { eyebrow: "Device network", title: "Booth & kiosk", description: "Buat booth per tenant dan salin tautan kiosk UUID untuk perangkat tersebut." },
-  sessions: { eyebrow: "Session recovery", title: "Sessions & reset", description: "Lihat sesi setiap tenant dan buat kode pemulihan 6 digit untuk mengulang pengambilan foto." },
+  booths: { eyebrow: "Device network", title: "Booth & kiosk", description: "Kelola identitas kiosk, kesiapan resource, koneksi perangkat, dan tautan operasional setiap booth." },
+  sessions: { eyebrow: "Session recovery", title: "Sessions & reset", description: "Pisahkan sesi production dan testing per tenant, kiosk, serta rentang waktu; buat kode pemulihan bila diperlukan." },
   payments: { eyebrow: "Finance controls", title: "Payment & pajak", description: "Atur Xendit QRIS, biaya cetak, fee pembayaran, dan pajak untuk setiap tenant." },
   sales: { eyebrow: "Profitability", title: "Sales & profit", description: "Pisahkan omzet dan laba bersih berdasarkan tenant, booth, serta perangkat printer." },
 };
@@ -124,6 +156,21 @@ function photoSessionOutcome(status: string) {
   if (status === "COMPLETED") return "SUCCESS" as const;
   if (["FAILED", "CANCELLED", "EXPIRED"].includes(status)) return "FAILED" as const;
   return "IN_PROGRESS" as const;
+}
+
+function groupBoothDevices(devices: Booth["devices"]) {
+  const grouped = new Map<string, Booth["devices"][number] & { instances: number }>();
+  for (const device of devices) {
+    const key = `${device.type}:${device.name.trim().toLowerCase()}`;
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...device, instances: 1 });
+      continue;
+    }
+    const preferredDevice = current.status !== "ONLINE" && device.status === "ONLINE" ? device : current;
+    grouped.set(key, { ...preferredDevice, preferred: current.preferred || device.preferred, instances: current.instances + 1 });
+  }
+  return Array.from(grouped.values());
 }
 
 function dateRangeQuery(range: { from: string; to: string }) {
@@ -154,8 +201,11 @@ export function SuperAdminConsole({ name }: { name: string }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [editingBooth, setEditingBooth] = useState<Booth | null>(null);
   const [deletingTenant, setDeletingTenant] = useState<Tenant | null>(null);
   const [sessionTenantId, setSessionTenantId] = useState("");
+  const [sessionBoothId, setSessionBoothId] = useState("");
+  const [sessionKindFilter, setSessionKindFilter] = useState<SessionKindFilter>("ALL");
   const [photoResultFilter, setPhotoResultFilter] = useState<PhotoResultFilter>("ALL");
   const [dateDraft, setDateDraft] = useState({ from: "", to: "" });
   const [appliedDateRange, setAppliedDateRange] = useState({ from: "", to: "" });
@@ -213,8 +263,15 @@ export function SuperAdminConsole({ name }: { name: string }) {
     [data.sales],
   );
   const visibleTenants = selectedTenantId ? data.tenants.filter((tenant) => tenant.id === selectedTenantId) : data.tenants;
-  const visibleSessions = sessionTenantId ? data.sessions.filter((session) => session.tenantId === sessionTenantId) : data.sessions;
-  const completedPhotoSessions = data.sessions.filter((session) => photoSessionOutcome(session.status) !== "IN_PROGRESS");
+  const sessionBoothOptions = data.booths.filter((booth) => !sessionTenantId || booth.tenantId === sessionTenantId);
+  const visibleSessions = data.sessions.filter((session) => (
+    (!sessionTenantId || session.tenantId === sessionTenantId)
+    && (!sessionBoothId || session.boothId === sessionBoothId)
+    && (sessionKindFilter === "ALL" || session.sessionKind === sessionKindFilter)
+  ));
+  const testingSessionCount = data.sessions.filter((session) => session.sessionKind === "TESTING").length;
+  const productionSessionCount = data.sessions.length - testingSessionCount;
+  const completedPhotoSessions = data.sessions.filter((session) => session.sessionKind === "PRODUCTION" && photoSessionOutcome(session.status) !== "IN_PROGRESS");
   const salesPhotoSessions = completedPhotoSessions.filter((session) => photoResultFilter === "ALL" || photoSessionOutcome(session.status) === photoResultFilter);
   const successfulPhotoCount = completedPhotoSessions.filter((session) => photoSessionOutcome(session.status) === "SUCCESS").length;
   const failedPhotoCount = completedPhotoSessions.filter((session) => photoSessionOutcome(session.status) === "FAILED").length;
@@ -387,40 +444,50 @@ export function SuperAdminConsole({ name }: { name: string }) {
         </div>}
 
         {activeView === "booths" && <>
-          <section className="super-booth-create"><form className="super-form-card" onSubmit={submitSimple("createBooth")}><h2><Monitor size={18} /> Tambah booth</h2><label>Tenant<SearchableSelect name="tenantId" required defaultValue="" placeholder="Pilih tenant" ariaLabel="Tenant booth" searchPlaceholder="Cari tenant..." options={data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))} /></label><div className="form-split"><label>Kode<input name="code" required placeholder="JKT-001" /></label><label>Nama<input name="name" required /></label></div><label>Lokasi<input name="location" /></label><button className="primary-button" disabled={saving === "createBooth"}><Plus size={15} /> Create booth</button></form></section>
-          <section className="super-section"><div className="section-heading"><div><h2>Booth & kiosk UUID</h2><p>Booth tanpa kombinasi layout dan frame otomatis masuk maintenance.</p></div></div><div className="booth-tenant-grid">{data.booths.map((booth) => {
+          <section className="super-booth-create"><form className="super-form-card" onSubmit={submitSimple("createBooth")}><h2><Monitor size={18} /> Tambah booth</h2><label>Tenant<SearchableSelect name="tenantId" required defaultValue="" placeholder="Pilih tenant" ariaLabel="Tenant booth" searchPlaceholder="Cari tenant..." options={data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))} /></label><div className="form-split"><label>Kode<input name="code" required placeholder="JKT-001" /></label><label>Nama<input name="name" required /></label></div><label>Lokasi<input name="location" placeholder="Contoh: Lantai 1, dekat lobby" /></label><label>Zona waktu<SearchableSelect name="timezone" defaultValue="Asia/Jakarta" ariaLabel="Zona waktu booth" options={timezoneOptions} /></label><button className="primary-button" disabled={saving === "createBooth"}><Plus size={15} /> Create booth</button></form></section>
+          <section className="super-section"><div className="section-heading"><div><h2>Booth & kiosk</h2><p>Identitas kiosk, resource, heartbeat, dan perangkat terhubung ditampilkan dalam satu kartu.</p></div></div><div className="booth-tenant-grid">{data.booths.map((booth) => {
             const operational = booth.kioskEnabled && !booth.maintenanceMode && booth.resourceReady;
+            const displayedDevices = groupBoothDevices(booth.devices);
+            const connectedDevices = displayedDevices.filter((device) => device.status === "ONLINE").length;
             return <article className={!operational ? "booth-card-inactive" : ""} key={booth.id}>
-              <div className="booth-card-status"><span className="status-chip"><span className={`status-dot ${operational ? "online" : booth.maintenanceMode ? "warn" : "error"}`} /> {operational ? "AKTIF" : booth.maintenanceMode ? "MAINTENANCE" : "NONAKTIF"}</span><small>{booth.status}</small></div>
-              <h3>{booth.name}</h3><p>{booth.tenant} · {booth.code}</p>
+              <header className="booth-card-header"><div className="booth-card-status"><span className="status-chip"><span className={`status-dot ${operational ? "online" : booth.maintenanceMode ? "warn" : "error"}`} /> {operational ? "AKTIF" : booth.maintenanceMode ? "MAINTENANCE" : "NONAKTIF"}</span><small><Radio size={11} /> {booth.status}</small></div><button className="booth-edit-button" type="button" onClick={() => { setError(null); setEditingBooth(booth); }} aria-label={`Edit kiosk ${booth.name}`}><Pencil size={13} /> Edit</button></header>
+              <div className="booth-card-title"><span>{booth.tenant}</span><h3>{booth.name}</h3><p><MapPin size={12} /> {booth.location || "Lokasi belum diisi"}</p></div>
+              <div className="booth-meta-grid"><span><small>Kode kiosk</small><strong>{booth.code}</strong></span><span><small>Zona waktu</small><strong>{booth.timezone}</strong></span><span><small>Heartbeat</small><strong>{booth.lastHeartbeatAt ? formatDateTime(booth.lastHeartbeatAt) : "Belum ada"}</strong></span><span><small>Perangkat online</small><strong>{connectedDevices} / {displayedDevices.length} jenis</strong></span></div>
               {!operational && <div className="booth-readiness-warning">{booth.readinessReason ?? "Booth dinonaktifkan oleh admin."}</div>}
-              <div className="booth-layout-counts">Layout siap: {booth.layoutCounts.length ? booth.layoutCounts.join(" / ") : "belum ada"}</div>
-              <code>{booth.kioskUrl}</code>
-              <div className="booth-card-actions"><button className="secondary-button" type="button" onClick={() => void navigator.clipboard.writeText(`${window.location.origin}${booth.kioskUrl}`)}><Copy size={13} /> Copy link</button><button className={`booth-power-button ${booth.kioskEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `booth-${booth.id}`} onClick={() => void send({ action: "updateBoothStatus", boothId: booth.id, enabled: !booth.kioskEnabled }, `booth-${booth.id}`)}>{saving === `booth-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />} {booth.kioskEnabled ? "Nonaktifkan" : "Aktifkan"}</button></div>
-              <button className={`booth-voice-button ${booth.voiceEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `voice-${booth.id}`} onClick={() => void send({ action: "updateBoothVoice", boothId: booth.id, enabled: !booth.voiceEnabled }, `voice-${booth.id}`)}>{saving === `voice-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : booth.voiceEnabled ? <VolumeX size={14} /> : <Volume2 size={14} />} {booth.voiceEnabled ? "Nonaktifkan suara" : "Aktifkan suara"}<small>Sinkron otomatis ke kiosk</small></button>
-              <div>{booth.devices.map((device) => <small key={device.id}>{device.type}: {device.name}</small>)}</div>
+              <div className="booth-layout-counts"><span>Layout siap</span>{booth.layoutCounts.length ? booth.layoutCounts.map((count) => <b key={count}>{count}x</b>) : <em>Belum ada layout</em>}</div>
+              <div className="booth-link-block"><small>URL kiosk</small><code title={booth.kioskUrl}>{booth.kioskUrl}</code></div>
+              <div className="booth-card-actions"><button className="secondary-button" type="button" onClick={() => void navigator.clipboard.writeText(`${window.location.origin}${booth.kioskUrl}`)}><Copy size={13} /> Copy link</button><button className={`booth-voice-button ${booth.voiceEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `voice-${booth.id}`} onClick={() => void send({ action: "updateBoothVoice", boothId: booth.id, enabled: !booth.voiceEnabled }, `voice-${booth.id}`)}>{saving === `voice-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : booth.voiceEnabled ? <VolumeX size={14} /> : <Volume2 size={14} />} {booth.voiceEnabled ? "Suara off" : "Suara on"}</button><button className={`booth-power-button ${booth.kioskEnabled ? "disable" : "enable"}`} type="button" disabled={saving === `booth-${booth.id}`} onClick={() => void send({ action: "updateBoothStatus", boothId: booth.id, enabled: !booth.kioskEnabled }, `booth-${booth.id}`)}>{saving === `booth-${booth.id}` ? <LoaderCircle className="spin" size={14} /> : <Power size={14} />} {booth.kioskEnabled ? "Nonaktifkan" : "Aktifkan"}</button></div>
+              <section className="booth-device-panel"><header><span>Perangkat terdaftar</span><b>{connectedDevices} online</b></header><div>{displayedDevices.map((device) => {
+                const DeviceIcon = device.type === "CAMERA" ? Camera : device.type === "PRINTER" ? Printer : Monitor;
+                return <div className="booth-device-row" key={`${device.type}:${device.name}`}><span className={`booth-device-icon ${device.status === "ONLINE" ? "online" : ""}`}><DeviceIcon size={14} /></span><div><strong>{device.name}</strong><small>{device.type}{device.preferred ? " · utama" : ""}{device.instances > 1 ? ` · ${device.instances} instance` : ""}{device.driverName ? ` · ${device.driverName}` : ""}</small></div><em className={device.status === "ONLINE" ? "online" : ""}>{device.status}</em></div>;
+              })}{displayedDevices.length === 0 && <p className="booth-device-empty">Belum ada perangkat yang dilaporkan kiosk.</p>}</div></section>
             </article>;
           })}</div></section>
         </>}
 
         {activeView === "sessions" && <section className="super-section tenant-section-first">
           <div className="section-heading">
-            <div><h2>Sessions per tenant</h2><p>{visibleSessions.length} dari {data.sessions.length} sesi · kode reset berlaku 10 menit dan hanya dapat dipakai sekali.</p></div>
-            <label className="tenant-filter">Tenant<SearchableSelect value={sessionTenantId} onValueChange={setSessionTenantId} ariaLabel="Filter tenant sesi" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Semua tenant" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label>
+            <div><h2>Daftar sessions</h2><p>{visibleSessions.length} dari {data.sessions.length} sesi · {productionSessionCount} production · {testingSessionCount} testing.</p></div>
+          </div>
+          <div className="session-filter-panel">
+            <label>Tenant<SearchableSelect value={sessionTenantId} onValueChange={(value) => { setSessionTenantId(value); setSessionBoothId(""); }} ariaLabel="Filter tenant sesi" searchPlaceholder="Cari tenant..." options={[{ value: "", label: "Semua tenant" }, ...data.tenants.map((tenant) => ({ value: tenant.id, label: tenant.name }))]} /></label>
+            <label>Kiosk<SearchableSelect value={sessionBoothId} onValueChange={setSessionBoothId} ariaLabel="Filter kiosk sesi" searchPlaceholder="Cari kiosk..." options={[{ value: "", label: "Semua kiosk" }, ...sessionBoothOptions.map((booth) => ({ value: booth.id, label: `${booth.name} · ${booth.code}` }))]} /></label>
+            <div className="session-kind-filter" role="group" aria-label="Filter tipe sesi"><span>Tipe sesi</span><div>{(["ALL", "PRODUCTION", "TESTING"] as SessionKindFilter[]).map((kind) => <button className={sessionKindFilter === kind ? "active" : ""} type="button" key={kind} onClick={() => setSessionKindFilter(kind)}>{kind === "ALL" ? `Semua ${data.sessions.length}` : kind === "PRODUCTION" ? `Production ${productionSessionCount}` : `Testing ${testingSessionCount}`}</button>)}</div></div>
           </div>
           {dateRangeFilter}
           <div className="session-recovery-list">
-            {visibleSessions.map((session) => <article className="session-recovery-card" key={session.id}>
+            {visibleSessions.map((session) => <article className={`session-recovery-card ${session.sessionKind === "TESTING" ? "testing" : ""}`} key={session.id}>
               <header>
                 <div><span>{session.tenant} · {session.boothCode}</span><h3>{session.publicCode}</h3><p>{session.booth} · {formatDateTime(session.startedAt)}</p></div>
-                <span className="status-chip"><span className={`status-dot ${session.status === "COMPLETED" ? "online" : ["CANCELLED", "EXPIRED", "FAILED"].includes(session.status) ? "error" : "warn"}`} /> {session.status}</span>
+                <div className="session-card-badges"><span className={`session-kind-chip ${session.sessionKind.toLowerCase()}`}>{session.sessionKind === "TESTING" ? <FlaskConical size={12} /> : <ShieldCheck size={12} />}{session.sessionKind}</span><span className="status-chip"><span className={`status-dot ${session.status === "COMPLETED" ? "online" : ["CANCELLED", "EXPIRED", "FAILED"].includes(session.status) ? "error" : "warn"}`} /> {session.status}</span></div>
               </header>
+              {session.sessionKind === "TESTING" && <div className="session-testing-note"><FlaskConical size={14} /><div><strong>Tidak masuk laporan sales</strong><span>{session.testingReason ?? "Sesi testing / bypass pembayaran"}</span></div></div>}
               <div className="session-recovery-facts">
                 <span><small>Layout / frame</small><strong>{session.layout ?? "Belum dipilih"}{session.frame ? ` · ${session.frame}` : ""}</strong></span>
                 <span><small>Foto</small><strong>{session.photoCount}</strong></span>
                 <span><small>Payment</small><strong>{session.paymentStatus}</strong></span>
                 <span><small>Upload</small><strong>{session.uploadStatus ?? "Belum ada job"}</strong></span>
-                <span><small>Total</small><strong>{formatCurrency(session.total)}</strong></span>
+                <span><small>{session.sessionKind === "TESTING" ? "Nilai simulasi" : "Total"}</small><strong>{formatCurrency(session.total)}</strong></span>
               </div>
               <details className="session-photo-detail compact">
                 <summary><Images size={14} /> Detail foto · {session.assets.filter((asset) => asset.kind === "ORIGINAL").length} raw</summary>
@@ -434,7 +501,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
                 <button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode 6 digit"}</button>
               </footer>
             </article>)}
-            {!loading && visibleSessions.length === 0 ? <div className="tenant-workspace-empty"><Images size={25} /><strong>Belum ada sesi</strong><span>Tidak ada sesi pada tenant yang dipilih.</span></div> : null}
+            {!loading && visibleSessions.length === 0 ? <div className="tenant-workspace-empty"><Images size={25} /><strong>Belum ada sesi</strong><span>Tidak ada sesi yang cocok dengan tenant, kiosk, tipe, dan rentang waktu terpilih.</span></div> : null}
           </div>
         </section>}
 
@@ -472,6 +539,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
               <a className="primary-button sales-export-button" href={`/api/super-admin/sales-export${appliedDateQuery ? `?${appliedDateQuery}` : ""}`}><Download size={15} /> Download Excel</a>
             </div>
             {dateRangeFilter}
+            <div className="sales-exclusion-note"><FlaskConical size={16} /><div><strong>Data testing tidak dihitung sebagai penjualan</strong><span>{data.salesSummary.excludedTestingOrders} order bypass/Xendit TEST dikeluarkan dari gross sales, biaya, pajak, dan net profit pada rentang ini.</span></div></div>
             <div className="sales-kpi-grid">
               <article><CircleDollarSign size={18} /><span>Gross sales</span><strong>{formatCurrency(totals.gross)}</strong></article>
               <article><ShieldCheck size={18} /><span>Net profit</span><strong>{formatCurrency(totals.net)}</strong></article>
@@ -523,6 +591,33 @@ export function SuperAdminConsole({ name }: { name: string }) {
           </form>
         </section>
       </div>}
+
+      {editingBooth && (
+        <div className="frame-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEditingBooth(null); }}>
+          <section className="frame-modal" style={{ width: "min(560px, 100%)" }} role="dialog" aria-modal="true" aria-labelledby="edit-booth-title">
+            <header>
+              <div><span className="eyebrow"><Monitor size={13} /> Edit kiosk</span><h2 id="edit-booth-title">{editingBooth.name}</h2><p>Perbarui identitas operasional kiosk. Tenant dan UUID tetap dipertahankan agar histori sesi tidak berubah.</p></div>
+              <button type="button" className="frame-modal-close" onClick={() => setEditingBooth(null)} disabled={Boolean(saving)} aria-label="Tutup edit kiosk"><X size={19} /></button>
+            </header>
+            <form onSubmit={async (event) => {
+              event.preventDefault();
+              const values = formObject(event.currentTarget);
+              const label = `booth-details-${editingBooth.id}`;
+              const ok = await send({ action: "updateBoothDetails", boothId: editingBooth.id, code: values.code, name: values.name, location: values.location, timezone: values.timezone }, label);
+              if (ok) setEditingBooth(null);
+            }}>
+              <div className="frame-form-copy booth-edit-form">
+                <div className="form-split"><label><span>Nama kiosk</span><input name="name" defaultValue={editingBooth.name} minLength={2} maxLength={80} required /></label><label><span>Kode unik</span><input name="code" defaultValue={editingBooth.code} pattern="[A-Za-z0-9-]+" minLength={2} maxLength={30} required /></label></div>
+                <label><span>Lokasi</span><input name="location" defaultValue={editingBooth.location ?? ""} maxLength={120} placeholder="Contoh: Lantai 1, dekat lobby" /></label>
+                <label><span>Zona waktu</span><SearchableSelect name="timezone" defaultValue={editingBooth.timezone} ariaLabel="Edit zona waktu kiosk" options={timezoneOptions.some((item) => item.value === editingBooth.timezone) ? timezoneOptions : [{ value: editingBooth.timezone, label: editingBooth.timezone }, ...timezoneOptions]} /></label>
+                <div className="booth-edit-identity"><span><small>Tenant</small><strong>{editingBooth.tenant}</strong></span><span><small>UUID kiosk</small><code>{editingBooth.id}</code></span></div>
+              </div>
+              {error && <div className="frame-feedback error" style={{ margin: "0 24px 16px" }} role="alert">{error}</div>}
+              <footer><button className="secondary-button" type="button" onClick={() => setEditingBooth(null)} disabled={Boolean(saving)}>Batal</button><button className="primary-button" type="submit" disabled={saving === `booth-details-${editingBooth.id}`}>{saving === `booth-details-${editingBooth.id}` ? <LoaderCircle className="spin" size={16} /> : <Pencil size={16} />} Simpan kiosk</button></footer>
+            </form>
+          </section>
+        </div>
+      )}
 
       {editingTenant && (
         <div className="frame-modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) setEditingTenant(null); }}>

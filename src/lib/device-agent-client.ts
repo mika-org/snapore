@@ -128,6 +128,7 @@ export async function persistCaptureLocally(input: {
   slotIndex: number;
   blob: Blob;
 }) {
+  await saveOfflineCapture({ ...input, createdAt: new Date().toISOString(), synced: false }).catch(() => undefined);
   try {
     const dataUrl = await blobToDataUrl(input.blob);
     const response = await fetch(`${agentUrl}/captures`, {
@@ -139,7 +140,6 @@ export async function persistCaptureLocally(input: {
     if (!response.ok) throw new Error("Agent gagal menyimpan capture");
     return { storage: "directory" as const, ...(await response.json()) };
   } catch {
-    await saveOfflineCapture({ ...input, createdAt: new Date().toISOString(), synced: false });
     return { storage: "indexeddb" as const };
   }
 }

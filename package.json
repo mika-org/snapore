@@ -10,7 +10,7 @@
     "dev": "next dev",
     "prebuild": "prisma generate",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -- -p 3001",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

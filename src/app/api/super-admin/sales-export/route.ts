@@ -1,6 +1,7 @@
 import { getAuthorizedUser } from "@/lib/auth";
 import { UserRole } from "@/generated/prisma/client";
 import { buildSalesProfitCsv } from "@/domain/sales-export";
+import { classifySession, isTestingSession } from "@/domain/session-classification";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
     prisma.order.findMany({
       where: from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {},
       orderBy: { createdAt: "asc" },
-      include: { session: { include: { booth: { include: { tenant: { select: { name: true } } } } } }, printJobs: { orderBy: { queuedAt: "asc" }, take: 1, include: { device: true } } },
+      include: { session: { include: { booth: { include: { tenant: { select: { name: true } } } } } }, payment: true, printJobs: { orderBy: { queuedAt: "asc" }, take: 1, include: { device: true } } },
     }),
     prisma.photoSession.findMany({
       where: from || to ? { startedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {},
@@ -33,6 +34,7 @@ export async function GET(request: Request) {
 
   const grouped = new Map<string, { tenant: string; booth: string; device: string; orders: number; prints: number; gross: number; tax: number; printCost: number; paymentFee: number; netProfit: number }>();
   orders.forEach((order) => {
+    if (isTestingSession({ paymentProvider: order.payment?.provider, paymentMetadata: order.payment?.metadata, sessionMetadata: order.session.metadata })) return;
     const device = order.printJobs[0]?.device;
     const key = `${order.session.booth.id}:${device?.id ?? "unassigned"}`;
     const current = grouped.get(key) ?? { tenant: order.session.booth.tenant.name, booth: order.session.booth.name, device: device?.name ?? "Belum ditetapkan", orders: 0, prints: 0, gross: 0, tax: 0, printCost: 0, paymentFee: 0, netProfit: 0 };
@@ -61,6 +63,7 @@ export async function GET(request: Request) {
       layout: session.layoutVersion?.layout.name ?? null,
       frame: session.frameVersion?.frame.name ?? null,
       paymentStatus: session.order?.payment?.status ?? "NOT_REQUIRED",
+      sessionKind: classifySession({ paymentProvider: session.order?.payment?.provider, paymentMetadata: session.order?.payment?.metadata, sessionMetadata: session.metadata }).kind,
       total: number(session.order?.total ?? 0),
     })),
   });

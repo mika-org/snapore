@@ -7,6 +7,7 @@ import {
   Aperture,
   Camera,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   CloudOff,
@@ -45,8 +46,11 @@ import { captureWithAgentCamera, clearLocalSessionProgress, createPrintAndUpload
 import { calculateOrder, framePresets, getFrameAsset, getFrameGeometry, layoutPresets, transitionSession, type FramePreset, type KioskStep, type LayoutPreset } from "@/domain/session";
 import { formatSessionTimer, PAYMENT_WINDOW_SECONDS, remainingSeconds, renewSessionDeadline, SESSION_WINDOW_SECONDS } from "@/domain/session-timers";
 import { clampGestureValue, getGestureMetrics, getPhotoTransformGeometry, normalizeGestureAngle, type GesturePoint } from "@/domain/photo-gestures";
+import { adjacentPhotoIndex, getPhotoKeyboardAction } from "@/domain/photo-editor-keyboard";
+import { normalizedKeyboardKey } from "@/domain/kiosk-shortcut";
 import { getSlotBleed } from "@/domain/layout-geometry";
 import { formatCurrency } from "@/lib/format";
+import { clearOfflineKioskSession, getOfflineKioskSession, getSessionCaptures, saveOfflineKioskSession } from "@/lib/offline-db";
 
 type CapturedImage = {
   id: string;
@@ -78,6 +82,10 @@ const defaultEditorSettings: EditorSettings = {
   offsetY: 0,
 };
 
+function isKeyboardControl(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest("input, textarea, select, button, a, [contenteditable='true']"));
+}
+
 function reportableDeviceStatus(status?: string): "ONLINE" | "OFFLINE" | "DEGRADED" {
   if (status === "ONLINE" || status === "DEGRADED") return status;
   return "OFFLINE";
@@ -95,6 +103,34 @@ type GestureState = {
 };
 
 type SyncStatus = "IDLE" | "SYNCING" | "RETRYING" | "SYNCED";
+
+type PersistedKioskSession = {
+  version: 1;
+  step: KioskStep;
+  layout: LayoutPreset;
+  frame: FramePreset;
+  photos: Array<Pick<CapturedImage, "id" | "storage" | "revision" | "edited"> & { slotIndex: number }>;
+  photoSettingsMap: Record<number, EditorSettings>;
+  selectedPhotoIndex: number;
+  editingIndex: number | null;
+  editorSettings: EditorSettings;
+  retakeIndex: number | null;
+  retakesUsed: number;
+  copies: number;
+  compositeBlob: Blob | null;
+  jobMode: "agent" | "browser-fallback" | null;
+  jobIds: { printJobId: string; uploadJobId: string } | null;
+  galleryUrl: string | null;
+  syncStatus: SyncStatus;
+  syncError: string | null;
+  paymentQrDataUrl: string | null;
+  paymentStatus: "IDLE" | "PENDING" | "PAID" | "EXPIRED";
+  paymentBypassRequired: boolean;
+  paymentExpiresAt: number | null;
+  sessionDeadline: number | null;
+  sessionExpired: boolean;
+  forceBrowserFallback: boolean;
+};
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -238,6 +274,7 @@ export type KioskBooth = {
 };
 
 export function KioskExperience({ booth }: { booth: KioskBooth }) {
+  const [resumeStatus, setResumeStatus] = useState<"loading" | "ready">("loading");
   const [step, setStep] = useState<KioskStep>("IDLE");
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [layout, setLayout] = useState<LayoutPreset>(layoutPresets[1]);
@@ -258,6 +295,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const [retakesUsed, setRetakesUsed] = useState(0);
   const [maxRetakes, setMaxRetakes] = useState(booth.maxRetakes);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(defaultEditorSettings);
   const [draggedPhotoIndex, setDraggedPhotoIndex] = useState<number | null>(null);
   const [dragOverSlotIndex, setDragOverSlotIndex] = useState<number | null>(null);
@@ -290,6 +328,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     });
     setDraggedPhotoIndex(null);
     setDragOverSlotIndex(null);
+    setSelectedPhotoIndex(toIndex);
   }, []);
   const [agentOnline, setAgentOnline] = useState(false);
   const [copies, setCopies] = useState(1);
@@ -328,7 +367,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     const activeKeys = new Set<string>();
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase();
+      const key = normalizedKeyboardKey(event);
+      if (!key) return;
       activeKeys.add(key);
 
       const isCtrl = event.ctrlKey || event.metaKey;
@@ -343,7 +383,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      activeKeys.delete(event.key.toLowerCase());
+      const key = normalizedKeyboardKey(event);
+      if (key) activeKeys.delete(key);
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -366,6 +407,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastVoiceRef = useRef<{ source: string; playedAt: number } | null>(null);
   const remoteVoiceEnabledRef = useRef(booth.voiceEnabled);
+  const sessionPersistenceEnabledRef = useRef(false);
   const browserCameraReportRef = useRef<{
     fingerprint: string;
     name: string;
@@ -375,6 +417,140 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     height?: number;
   } | null>(null);
   const kioskInstanceIdRef = useRef("");
+
+  useEffect(() => {
+    let active = true;
+    const createdUrls: string[] = [];
+
+    const restoreSession = async () => {
+      try {
+        const saved = await Promise.race([
+          getOfflineKioskSession<PersistedKioskSession>(booth.id),
+          new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3_000)),
+        ]);
+        if (!saved || saved.state.version !== 1 || saved.state.step === "IDLE") return;
+
+        const snapshot = saved.state;
+        const storedCaptures = await getSessionCaptures(saved.sessionId);
+        const captureById = new Map(storedCaptures.map((capture) => [capture.id, capture]));
+        const restoredPhotos: CapturedImage[] = [];
+
+        snapshot.photos
+          .sort((left, right) => left.slotIndex - right.slotIndex)
+          .forEach((metadata) => {
+            const capture = captureById.get(metadata.id);
+            if (!capture) return;
+            const url = URL.createObjectURL(capture.blob);
+            createdUrls.push(url);
+            restoredPhotos[metadata.slotIndex] = {
+              id: metadata.id,
+              blob: capture.blob,
+              url,
+              storage: metadata.storage,
+              revision: metadata.revision,
+              edited: metadata.edited,
+            };
+          });
+
+        const savedAt = Date.parse(saved.savedAt);
+        const newestCaptureBySlot = new Map<number, (typeof storedCaptures)[number]>();
+        storedCaptures.forEach((capture) => {
+          const current = newestCaptureBySlot.get(capture.slotIndex);
+          if (!current || Date.parse(capture.createdAt) > Date.parse(current.createdAt)) newestCaptureBySlot.set(capture.slotIndex, capture);
+        });
+        newestCaptureBySlot.forEach((capture, slotIndex) => {
+          const captureIsNewer = Number.isFinite(savedAt) && Date.parse(capture.createdAt) > savedAt;
+          if (restoredPhotos[slotIndex] && !captureIsNewer) return;
+          const previous = restoredPhotos[slotIndex];
+          if (previous) URL.revokeObjectURL(previous.url);
+          const url = URL.createObjectURL(capture.blob);
+          createdUrls.push(url);
+          restoredPhotos[slotIndex] = {
+            id: capture.id,
+            blob: capture.blob,
+            url,
+            storage: "indexeddb",
+            revision: (previous?.revision ?? 0) + 1,
+          };
+        });
+
+        const compactPhotos: CapturedImage[] = [];
+        for (let index = 0; index < snapshot.layout.count; index += 1) {
+          const photo = restoredPhotos[index];
+          if (!photo) break;
+          compactPhotos.push(photo);
+        }
+        let restoredStep = snapshot.step;
+        let restoredRetakeIndex = snapshot.retakeIndex;
+        let restoredRetakesUsed = snapshot.retakesUsed;
+        const retakeCompletedAfterSnapshot = snapshot.retakeIndex !== null
+          && Boolean(newestCaptureBySlot.get(snapshot.retakeIndex))
+          && Number.isFinite(savedAt)
+          && Date.parse(newestCaptureBySlot.get(snapshot.retakeIndex)!.createdAt) > savedAt;
+
+        if (restoredStep === "CAPTURE" && (retakeCompletedAfterSnapshot || (restoredRetakeIndex === null && compactPhotos.length >= snapshot.layout.count))) {
+          restoredStep = "REVIEW";
+          if (retakeCompletedAfterSnapshot) restoredRetakesUsed += 1;
+          restoredRetakeIndex = null;
+        }
+        if (["REVIEW", "CHECKOUT", "PRINTING"].includes(restoredStep) && compactPhotos.length < snapshot.layout.count) restoredStep = "CAPTURE";
+        if ((restoredStep === "CHECKOUT" || restoredStep === "PRINTING") && !snapshot.compositeBlob) restoredStep = "REVIEW";
+        if (restoredStep === "PRINTING") restoredStep = snapshot.jobIds ? "DONE" : "CHECKOUT";
+
+        if (!active) return;
+        setSessionId(saved.sessionId);
+        setStep(restoredStep);
+        setLayout(snapshot.layout);
+        setFrame(snapshot.frame);
+        setPhotos(compactPhotos);
+        setPhotoSettingsMap(snapshot.photoSettingsMap ?? {});
+        setSelectedPhotoIndex(Math.min(snapshot.selectedPhotoIndex ?? 0, Math.max(0, compactPhotos.length - 1)));
+        const restoredEditingIndex = restoredStep === "REVIEW" && snapshot.editingIndex !== null && compactPhotos[snapshot.editingIndex]
+          ? snapshot.editingIndex
+          : null;
+        setEditingIndex(restoredEditingIndex);
+        setEditorSettings(restoredEditingIndex === null ? defaultEditorSettings : snapshot.editorSettings ?? defaultEditorSettings);
+        setRetakeIndex(restoredRetakeIndex);
+        setRetakesUsed(restoredRetakesUsed);
+        setCopies(snapshot.copies ?? 1);
+        if (snapshot.compositeBlob) {
+          const compositeUrl = URL.createObjectURL(snapshot.compositeBlob);
+          createdUrls.push(compositeUrl);
+          setComposite({ blob: snapshot.compositeBlob, dataUrl: compositeUrl });
+        }
+        setJobMode(snapshot.jobMode);
+        setJobIds(snapshot.jobIds);
+        setGalleryUrl(snapshot.galleryUrl);
+        setSyncStatus(snapshot.syncStatus);
+        setSyncError(snapshot.syncError);
+        setPaymentQrDataUrl(snapshot.paymentQrDataUrl);
+        const paymentExpired = snapshot.paymentExpiresAt !== null && snapshot.paymentExpiresAt <= Date.now();
+        setPaymentStatus(paymentExpired && snapshot.paymentStatus === "PENDING" ? "EXPIRED" : snapshot.paymentStatus);
+        setPaymentBypassRequired(snapshot.paymentBypassRequired);
+        setPaymentExpiresAt(snapshot.paymentExpiresAt);
+        setPaymentRemaining(snapshot.paymentExpiresAt ? remainingSeconds(snapshot.paymentExpiresAt) : PAYMENT_WINDOW_SECONDS);
+        const sessionExpiredNow = snapshot.sessionDeadline !== null && snapshot.sessionDeadline <= Date.now();
+        setSessionDeadline(snapshot.sessionDeadline);
+        setSessionRemaining(snapshot.sessionDeadline ? remainingSeconds(snapshot.sessionDeadline) : SESSION_WINDOW_SECONDS);
+        setSessionExpired(snapshot.sessionExpired || sessionExpiredNow);
+        forceBrowserFallbackRef.current = snapshot.forceBrowserFallback;
+        paymentStartedRef.current = restoredStep === "PAYMENT" ? snapshot.paymentStatus === "PENDING" : restoredStep !== "IDLE";
+        sessionStartedRef.current = !["IDLE", "PAYMENT"].includes(restoredStep);
+        printingTriggeredRef.current = restoredStep === "DONE" && Boolean(snapshot.jobIds);
+        sessionPersistenceEnabledRef.current = true;
+      } catch {
+        // Corrupt or unavailable local recovery data must not block the kiosk.
+      } finally {
+        if (active) setResumeStatus("ready");
+      }
+    };
+
+    void restoreSession();
+    return () => {
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [booth.id]);
 
   const stopVoice = useCallback(() => {
     voiceRequestRef.current += 1;
@@ -473,7 +649,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   );
 
   useEffect(() => {
-    if (step !== "IDLE" && step !== "FRAME") return;
+    if (step !== "IDLE" && step !== "LAYOUT" && step !== "FRAME") return;
     let active = true;
     fetch(`/api/frames?boothId=${encodeURIComponent(booth.id)}`, { cache: "no-store" })
       .then(async (response) => {
@@ -799,14 +975,15 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     }
   };
 
-  const startRetake = (index: number) => {
+  const startRetake = useCallback((index: number) => {
     if (retakesUsed >= maxRetakes) return;
     void playVoice(retakeVoiceAsset(index + 1), false);
+    setSelectedPhotoIndex(index);
     setRetakeIndex(index);
     setCaptureBusy(false);
     setCameraError(null);
     advance("RETAKE_PHOTO");
-  };
+  }, [advance, maxRetakes, playVoice, retakesUsed]);
 
   const cancelRetake = () => {
     setRetakeIndex(null);
@@ -814,11 +991,12 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     advance("RETAKE_COMPLETE");
   };
 
-  const openEditor = (index: number) => {
+  const openEditor = useCallback((index: number) => {
     gestureRef.current = { pointers: new Map(), center: null, distance: 0, angle: 0 };
+    setSelectedPhotoIndex(index);
     setEditingIndex(index);
     setEditorSettings(photoSettingsMap[index] ?? defaultEditorSettings);
-  };
+  }, [photoSettingsMap]);
 
   const beginEditorGesture = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -871,19 +1049,78 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       : { ...value, zoom: clampGestureValue(value.zoom - event.deltaY * .0015, 1, 4) });
   };
 
-  const savePhotoEdit = () => {
-    if (editingIndex === null) return;
-    const current = photos[editingIndex];
-    if (!current) return;
-    setEditSaving(true);
-    setPhotos((items) => items.map((photo, index) => index === editingIndex
+  const persistPhotoEdit = useCallback((photoIndex: number, settings: EditorSettings) => {
+    setPhotos((items) => items.map((photo, itemIndex) => itemIndex === photoIndex
       ? { ...photo, revision: photo.revision + 1, edited: true }
       : photo));
-    setPhotoSettingsMap((prev) => ({ ...prev, [editingIndex]: editorSettings }));
+    setPhotoSettingsMap((prev) => ({ ...prev, [photoIndex]: settings }));
+  }, []);
+
+  const switchEditorPhoto = useCallback((direction: -1 | 1) => {
+    if (editingIndex === null || photos.length <= 1) return;
+    persistPhotoEdit(editingIndex, editorSettings);
+    const nextIndex = adjacentPhotoIndex(editingIndex, Math.min(photos.length, layout.count), direction);
+    gestureRef.current = { pointers: new Map(), center: null, distance: 0, angle: 0 };
+    setSelectedPhotoIndex(nextIndex);
+    setEditingIndex(nextIndex);
+    setEditorSettings(photoSettingsMap[nextIndex] ?? defaultEditorSettings);
+  }, [editingIndex, editorSettings, layout.count, persistPhotoEdit, photoSettingsMap, photos.length]);
+
+  const savePhotoEdit = useCallback(() => {
+    if (editingIndex === null || !photos[editingIndex]) return;
+    setEditSaving(true);
+    persistPhotoEdit(editingIndex, editorSettings);
     setEditingIndex(null);
     setEditorSettings(defaultEditorSettings);
     setEditSaving(false);
-  };
+  }, [editingIndex, editorSettings, persistPhotoEdit, photos]);
+
+  useEffect(() => {
+    const handlePhotoKeyboard = (event: KeyboardEvent) => {
+      if (isKeyboardControl(event.target) || bypassDialogOpen || resetDialogOpen || sessionExpired) return;
+      const mode = editingIndex !== null ? "EDITOR" : step === "REVIEW" ? "REVIEW" : null;
+      if (!mode) return;
+      const action = getPhotoKeyboardAction(event, mode);
+      if (!action) return;
+      event.preventDefault();
+
+      if (mode === "REVIEW") {
+        if (photos.length === 0) return;
+        const currentIndex = Math.min(selectedPhotoIndex, photos.length - 1);
+        if (action === "SELECT_PREVIOUS" || action === "SELECT_NEXT") {
+          setSelectedPhotoIndex(adjacentPhotoIndex(currentIndex, photos.length, action === "SELECT_PREVIOUS" ? -1 : 1));
+        } else if (action === "SWAP_PREVIOUS" || action === "SWAP_NEXT") {
+          const targetIndex = adjacentPhotoIndex(currentIndex, photos.length, action === "SWAP_PREVIOUS" ? -1 : 1);
+          swapPhotos(currentIndex, targetIndex);
+        } else if (action === "OPEN_EDITOR") {
+          openEditor(currentIndex);
+        } else if (action === "RETAKE" && retakesUsed < maxRetakes) {
+          startRetake(currentIndex);
+        }
+        return;
+      }
+
+      const moveStep = event.shiftKey ? 0.05 : 0.01;
+      const rotateStep = event.shiftKey ? 15 : 1;
+      if (action === "MOVE_LEFT") setEditorSettings((value) => ({ ...value, offsetX: clampGestureValue(value.offsetX - moveStep, -0.4, 0.4) }));
+      else if (action === "MOVE_RIGHT") setEditorSettings((value) => ({ ...value, offsetX: clampGestureValue(value.offsetX + moveStep, -0.4, 0.4) }));
+      else if (action === "MOVE_UP") setEditorSettings((value) => ({ ...value, offsetY: clampGestureValue(value.offsetY - moveStep, -0.4, 0.4) }));
+      else if (action === "MOVE_DOWN") setEditorSettings((value) => ({ ...value, offsetY: clampGestureValue(value.offsetY + moveStep, -0.4, 0.4) }));
+      else if (action === "ZOOM_IN") setEditorSettings((value) => ({ ...value, zoom: clampGestureValue(value.zoom + 0.1, 1, 4) }));
+      else if (action === "ZOOM_OUT") setEditorSettings((value) => ({ ...value, zoom: clampGestureValue(value.zoom - 0.1, 1, 4) }));
+      else if (action === "ROTATE_LEFT") setEditorSettings((value) => ({ ...value, rotation: value.rotation - rotateStep }));
+      else if (action === "ROTATE_RIGHT") setEditorSettings((value) => ({ ...value, rotation: value.rotation + rotateStep }));
+      else if (action === "TOGGLE_MIRROR") setEditorSettings((value) => ({ ...value, flipped: !value.flipped }));
+      else if (action === "RESET_EDIT") setEditorSettings(defaultEditorSettings);
+      else if (action === "PREVIOUS_PHOTO") switchEditorPhoto(-1);
+      else if (action === "NEXT_PHOTO") switchEditorPhoto(1);
+      else if (action === "SAVE_EDIT") savePhotoEdit();
+      else if (action === "CANCEL_EDIT") setEditingIndex(null);
+    };
+
+    window.addEventListener("keydown", handlePhotoKeyboard);
+    return () => window.removeEventListener("keydown", handlePhotoKeyboard);
+  }, [bypassDialogOpen, editingIndex, maxRetakes, openEditor, photos.length, resetDialogOpen, retakesUsed, savePhotoEdit, selectedPhotoIndex, sessionExpired, startRetake, step, swapPhotos, switchEditorPhoto]);
 
   const approvePhotos = async () => {
     const result = await composePrint({
@@ -1004,8 +1241,9 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     }
   }, [advance, booth.id, bypassOperatorId, bypassPasscode, bypassReason, sessionId]);
 
-  const beginPayment = async (fromIdle = true) => {
-    if (paymentBusy || paymentStartedRef.current || frameCatalogStatus !== "ready") return;
+  const beginPayment = useCallback(async (fromIdle = true) => {
+    if (paymentBusy || paymentStartedRef.current || (fromIdle && frameCatalogStatus !== "ready")) return;
+    sessionPersistenceEnabledRef.current = true;
     if (fromIdle) {
       void playVoice(kioskStepVoiceAsset("PAYMENT", layout.count));
       advance("START");
@@ -1048,7 +1286,14 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     } finally {
       setPaymentBusy(false);
     }
-  };
+  }, [advance, booth.id, frameCatalogStatus, layout.count, paymentBusy, playVoice, sessionId, startPaidSession]);
+
+  useEffect(() => {
+    if (resumeStatus !== "ready" || step !== "PAYMENT" || paymentStatus !== "IDLE" || paymentBusy || paymentQrDataUrl || paymentBypassRequired) return;
+    paymentStartedRef.current = false;
+    const timer = window.setTimeout(() => void beginPayment(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [beginPayment, paymentBusy, paymentBypassRequired, paymentQrDataUrl, paymentStatus, resumeStatus, step]);
 
   useEffect(() => {
     if (paymentStatus !== "PENDING") return;
@@ -1085,8 +1330,11 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     return () => window.clearInterval(timer);
   }, [paymentExpiresAt, paymentStatus, step]);
 
-  const reset = useCallback(() => {
+  const reset = useCallback(async () => {
+    sessionPersistenceEnabledRef.current = false;
+    await clearOfflineKioskSession(booth.id).catch(() => undefined);
     photos.forEach((photo) => URL.revokeObjectURL(photo.url));
+    if (composite?.dataUrl.startsWith("blob:")) URL.revokeObjectURL(composite.dataUrl);
     setPhotos([]);
     setComposite(null);
     setCopies(1);
@@ -1117,11 +1365,13 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     setRetakeIndex(null);
     setRetakesUsed(0);
     setEditingIndex(null);
+    setSelectedPhotoIndex(0);
     setEditorSettings(defaultEditorSettings);
+    setPhotoSettingsMap({});
     setJobMode(null);
     forceBrowserFallbackRef.current = false;
     setStep("IDLE");
-  }, [photos]);
+  }, [booth.id, composite, photos]);
 
   const redeemResetCode = async () => {
     if (!/^\d{6}$/.test(resetCode) || resetCodeBusy) return;
@@ -1137,6 +1387,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       if (!response.ok || !payload.sessionId) throw new Error(payload.error ?? "Kode reset tidak dapat digunakan.");
 
       const localAgentReset = await clearLocalSessionProgress(payload.sessionId);
+      await clearOfflineKioskSession(booth.id).catch(() => undefined);
+      sessionPersistenceEnabledRef.current = true;
       forceBrowserFallbackRef.current = !localAgentReset;
       photos.forEach((photo) => URL.revokeObjectURL(photo.url));
       setPhotos([]);
@@ -1172,7 +1424,9 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       setRetakeIndex(null);
       setRetakesUsed(0);
       setEditingIndex(null);
+      setSelectedPhotoIndex(0);
       setEditorSettings(defaultEditorSettings);
+      setPhotoSettingsMap({});
       setJobMode(null);
       setResetCode("");
       setResetDialogOpen(false);
@@ -1206,10 +1460,62 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     setSessionExpired(false);
   };
 
+  useEffect(() => {
+    if (resumeStatus !== "ready" || !sessionPersistenceEnabledRef.current || step === "IDLE") return;
+    const timer = window.setTimeout(() => {
+      if (!sessionPersistenceEnabledRef.current) return;
+      const savedAt = new Date().toISOString();
+      void saveOfflineKioskSession<PersistedKioskSession>({
+        boothId: booth.id,
+        sessionId,
+        savedAt,
+        state: {
+          version: 1,
+          step,
+          layout,
+          frame,
+          photos: photos.map((photo, slotIndex) => ({
+            id: photo.id,
+            slotIndex,
+            storage: photo.storage,
+            revision: photo.revision,
+            edited: photo.edited,
+          })),
+          photoSettingsMap,
+          selectedPhotoIndex,
+          editingIndex,
+          editorSettings,
+          retakeIndex,
+          retakesUsed,
+          copies,
+          compositeBlob: composite?.blob ?? null,
+          jobMode,
+          jobIds,
+          galleryUrl,
+          syncStatus,
+          syncError,
+          paymentQrDataUrl,
+          paymentStatus,
+          paymentBypassRequired,
+          paymentExpiresAt,
+          sessionDeadline,
+          sessionExpired,
+          forceBrowserFallback: forceBrowserFallbackRef.current,
+        },
+      }).catch(() => undefined);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [booth.id, composite, copies, editingIndex, editorSettings, frame, galleryUrl, jobIds, jobMode, layout, paymentBypassRequired, paymentExpiresAt, paymentQrDataUrl, paymentStatus, photoSettingsMap, photos, resumeStatus, retakeIndex, retakesUsed, selectedPhotoIndex, sessionDeadline, sessionExpired, sessionId, step, syncError, syncStatus]);
+
+  if (resumeStatus === "loading") {
+    return <div className="kiosk kiosk-resume-loading" role="status"><LoaderCircle className="is-spinning" size={38} /><strong>Memulihkan sesi photobooth...</strong><span>Foto dan langkah terakhir sedang dibuka dari penyimpanan lokal.</span></div>;
+  }
+
   const activeFrameGeometry = getFrameGeometry(frame, layout.count);
   const activeEditorSlot = editingIndex === null
     ? activeFrameGeometry.slots[0]
     : activeFrameGeometry.slots[editingIndex] ?? activeFrameGeometry.slots[0];
+  const activeReviewPhotoIndex = photos.length === 0 ? 0 : Math.min(selectedPhotoIndex, photos.length - 1);
   const retakesRemaining = Math.max(0, maxRetakes - retakesUsed);
   const paperOut = hardwareReport?.paper?.level === "EMPTY";
   const paperLow = hardwareReport?.paper?.level === "LOW";
@@ -1361,6 +1667,13 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
             <div className="review-layout">
               <div>
                 <div className="review-help"><SlidersHorizontal size={16} /><span>Pilih <strong>Edit</strong> untuk menggeser & zoom foto, atau <strong>drag & drop</strong> foto ke slot frame. Retake tersisa: <strong>{retakesRemaining} dari {maxRetakes}</strong>.</span></div>
+                <div className="photo-keyboard-guide" aria-label="Shortcut keyboard review foto">
+                  <strong>Keyboard</strong>
+                  <span><kbd>←</kbd><kbd>→</kbd> Pilih foto</span>
+                  <span><kbd>Shift</kbd> + <kbd>←</kbd><kbd>→</kbd> Tukar posisi</span>
+                  <span><kbd>Enter</kbd> / <kbd>E</kbd> Edit</span>
+                  <span><kbd>R</kbd> Retake</span>
+                </div>
                 <div className="review-photos-box">
                   <div className="review-box-header">
                     <div className="box-title">
@@ -1374,11 +1687,14 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                     {photos.map((photo, index) => {
                       const isDragging = draggedPhotoIndex === index;
                       const isTarget = dragOverSlotIndex === index;
+                      const isKeyboardSelected = activeReviewPhotoIndex === index;
                       return (
                         <div
-                          className={`review-photo ${isDragging ? "is-dragging" : ""} ${isTarget ? "drop-target-active" : ""}`}
+                          className={`review-photo ${isDragging ? "is-dragging" : ""} ${isTarget ? "drop-target-active" : ""} ${isKeyboardSelected ? "is-keyboard-selected" : ""}`}
                           key={photo.id}
+                          aria-current={isKeyboardSelected ? "true" : undefined}
                           draggable
+                          onPointerDown={() => setSelectedPhotoIndex(index)}
                           onDragStart={(event) => {
                             event.dataTransfer.setData("text/plain", String(index));
                             setDraggedPhotoIndex(index);
@@ -1403,6 +1719,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                         >
                           <img src={photo.url} alt={`Hasil foto ${index + 1}`} />
                           <span className="photo-number">{index + 1}</span>
+                          {isKeyboardSelected && <span className="keyboard-selected-label">Dipilih</span>}
                           <span className="drag-handle" title="Drag foto ini"><GripVertical size={14} /></span>
                           {photo.revision > 1 && <em className="revision-badge">v{photo.revision}{photo.edited ? " · edited" : " · retake"}</em>}
                           <div className="photo-actions">
@@ -1578,7 +1895,14 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                 <div className="kiosk-eyebrow">Edit pose {editingIndex + 1} · Grid {layout.count}</div>
                 <h2>Fine-tune this slot.</h2>
               </div>
-              <button className="editor-close" onClick={() => setEditingIndex(null)} aria-label="Tutup editor"><X size={20} /></button>
+              <div className="editor-header-actions">
+                <div className="editor-photo-navigation" aria-label="Navigasi foto di editor">
+                  <button type="button" disabled={photos.length <= 1} onClick={() => switchEditorPhoto(-1)} aria-label="Simpan dan buka foto sebelumnya"><ChevronLeft size={17} /></button>
+                  <span>Foto <strong>{editingIndex + 1}</strong> / {Math.min(photos.length, layout.count)}</span>
+                  <button type="button" disabled={photos.length <= 1} onClick={() => switchEditorPhoto(1)} aria-label="Simpan dan buka foto berikutnya"><ChevronRight size={17} /></button>
+                </div>
+                <button className="editor-close" onClick={() => setEditingIndex(null)} aria-label="Tutup editor"><X size={20} /></button>
+              </div>
             </header>
             <div className="editor-body">
               <div
@@ -1602,6 +1926,12 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                 <div className="editor-safe-area" />
               </div>
               <aside className="editor-controls">
+                <div className="editor-keyboard-guide" aria-label="Shortcut keyboard editor foto">
+                  <strong>Navigasi keyboard</strong>
+                  <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> Geser · tahan <kbd>Shift</kbd> untuk langkah besar</span>
+                  <span><kbd>+</kbd><kbd>−</kbd> Zoom · <kbd>Q</kbd><kbd>E</kbd> Rotasi · <kbd>M</kbd> Mirror</span>
+                  <span><kbd>PgUp</kbd><kbd>PgDn</kbd> Simpan & pindah foto · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> Simpan</span>
+                </div>
                 <div className="control-group">
                   <span className="control-label">Transform & Orientation</span>
                   <div className="tool-row">

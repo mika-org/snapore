@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { PwaRegister } from "@/components/pwa-register";
+import { KioskUuidShortcut } from "@/components/kiosk-uuid-shortcut";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -27,7 +28,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="id">
-      <body suppressHydrationWarning><PwaRegister />{children}</body>
+      <body suppressHydrationWarning><PwaRegister />{children}<KioskUuidShortcut /></body>
     </html>
   );
 }

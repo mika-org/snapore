@@ -23,6 +23,7 @@ export type SessionExportRow = {
   layout: string | null;
   frame: string | null;
   paymentStatus: string;
+  sessionKind: string;
   total: number;
 };
 
@@ -62,8 +63,8 @@ export function buildSalesProfitCsv(input: { generatedAt: Date; sales: SalesExpo
     ...input.sales.map((item) => row([item.tenant, item.booth, item.device, item.orders, item.prints, item.gross, item.tax, item.printCost, item.paymentFee, item.netProfit])),
     "",
     row(["PHOTO SESSION OUTCOMES"]),
-    row(["Session code", "Tenant", "Booth", "Status", "Outcome", "Started at", "Completed at", "Photos", "Layout", "Frame", "Payment", "Total"]),
-    ...input.sessions.map((item) => row([item.publicCode, item.tenant, item.booth, item.status, item.outcome, item.startedAt.toISOString(), item.completedAt?.toISOString() ?? "", item.photoCount, item.layout ?? "", item.frame ?? "", item.paymentStatus, item.total])),
+    row(["Session code", "Tenant", "Booth", "Type", "Status", "Outcome", "Started at", "Completed at", "Photos", "Layout", "Frame", "Payment", "Total"]),
+    ...input.sessions.map((item) => row([item.publicCode, item.tenant, item.booth, item.sessionKind, item.status, item.outcome, item.startedAt.toISOString(), item.completedAt?.toISOString() ?? "", item.photoCount, item.layout ?? "", item.frame ?? "", item.paymentStatus, item.total])),
   ];
   return `\uFEFF${lines.join("\r\n")}`;
 }
