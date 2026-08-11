@@ -1,135 +1,136 @@
 name: Deploy
 
 on:
-  push:
-    branches:
-      - main
+push:
+branches:
+- main
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+deploy:
+runs-on: ubuntu-latest
+timeout-minutes: 30
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+```
+steps:
+  - name: Checkout Repository
+    uses: actions/checkout@v4
 
-      - name: Record Start Time
-        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+  - name: Record Start Time
+    run: echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Deploy to VPS
-        id: deploy
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          script_stop: true
-          script: |
-            set -e
+  - name: Deploy to VPS
+    id: deploy
+    uses: appleboy/ssh-action@v1.2.0
+    with:
+      host: ${{ secrets.VPS_HOST }}
+      username: ${{ secrets.VPS_USER }}
+      key: ${{ secrets.VPS_SSH_KEY }}
+      port: ${{ secrets.VPS_PORT }}
+      script_stop: true
+      script: |
+        set -e
 
-            cd /var/www/html/photobooth
+        cd /var/www/html/photobooth
 
-            git pull origin main
+        git pull origin main
 
-            npm ci
+        npm ci
 
-            npm run build
+        npm run build
 
-            if pm2 describe photobooth > /dev/null 2>&1; then
-              PORT=3001 pm2 restart photobooth --update-env
-            else
-              PORT=3001 pm2 start npm --name photobooth -- start
-            fi
+        if pm2 describe photobooth > /dev/null 2>&1; then
+          PORT=3001 pm2 restart photobooth --update-env
+        else
+          PORT=3001 pm2 start npm --name photobooth -- start
+        fi
 
-            pm2 save
+        pm2 save
 
-      - name: Calculate Duration
-        if: always()
-        run: |
-          END_TIME=$(date +%s)
-          TOTAL=$((END_TIME - START_TIME))
+  - name: Calculate Duration
+    if: always()
+    run: |
+      END_TIME=$(date +%s)
+      TOTAL=$((END_TIME - START_TIME))
 
-          HOURS=$((TOTAL / 3600))
-          MINUTES=$(((TOTAL % 3600) / 60))
-          SECONDS=$((TOTAL % 60))
+      HOURS=$((TOTAL / 3600))
+      MINUTES=$(((TOTAL % 3600) / 60))
+      SECONDS=$((TOTAL % 60))
 
-          if [ $HOURS -gt 0 ]; then
-            DURATION="${HOURS}h ${MINUTES}m ${SECONDS}s"
-          elif [ $MINUTES -gt 0 ]; then
-            DURATION="${MINUTES}m ${SECONDS}s"
-          else
-            DURATION="${SECONDS}s"
-          fi
+      if [ "$HOURS" -gt 0 ]; then
+        DURATION="${HOURS}h ${MINUTES}m ${SECONDS}s"
+      elif [ "$MINUTES" -gt 0 ]; then
+        DURATION="${MINUTES}m ${SECONDS}s"
+      else
+        DURATION="${SECONDS}s"
+      fi
 
-          echo "DURATION=$DURATION" >> $GITHUB_ENV
-          echo "FINISHED=$(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S WIB')" >> $GITHUB_ENV
+      echo "DURATION=$DURATION" >> "$GITHUB_ENV"
+      echo "FINISHED=$(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S WIB')" >> "$GITHUB_ENV"
 
-      - name: Telegram Success Notification
-        if: success()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          format: markdown
-          message: |
-            🚀 *Deploy Notification*
+  - name: Telegram Success Notification
+    if: success()
+    uses: appleboy/telegram-action@master
+    with:
+      to: ${{ secrets.TELEGRAM_CHAT_ID }}
+      token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      format: markdown
+      message: |
+        🚀 *Deploy Notification*
 
-            ✅ *Deploy Successful*
+        ✅ *Deploy Successful*
 
-            📦 *Repository:* `${{ github.repository }}`
-            🌿 *Branch:* `${{ github.ref_name }}`
-            👤 *Committer:* `${{ github.actor }}`
+        📦 *Repository:* `${{ github.repository }}`
+        🌿 *Branch:* `${{ github.ref_name }}`
+        👤 *Committer:* `${{ github.actor }}`
 
-            📝 *Commit:*
-            `${{ github.event.head_commit.message }}`
+        📝 *Commit:*
+        `${{ github.event.head_commit.message }}`
 
-            🔗 *Commit:*
-            https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+        🔗 *Commit:*
+        https://github.com/${{ github.repository }}/commit/${{ github.sha }}
 
-            🖥 *Server:*
-            `${{ secrets.VPS_HOST }}`
+        🖥 *Server:*
+        `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3001`
+        🌐 *Application Port:* `3001`
 
-            🕒 *Finished:* `${{ env.FINISHED }}`
-            ⏱ *Duration:* `${{ env.DURATION }}`
+        🕒 *Finished:* `${{ env.FINISHED }}`
+        ⏱ *Duration:* `${{ env.DURATION }}`
 
-            🚀 *Status:* ✅ SUCCESS
+        🚀 *Status:* ✅ SUCCESS
 
-      - name: Telegram Failed Notification
-        if: failure()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          format: markdown
-          message: |
-            🚀 *Deploy Notification*
+  - name: Telegram Failed Notification
+    if: failure()
+    uses: appleboy/telegram-action@master
+    with:
+      to: ${{ secrets.TELEGRAM_CHAT_ID }}
+      token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      format: markdown
+      message: |
+        🚀 *Deploy Notification*
 
-            ❌ *Deploy Failed*
+        ❌ *Deploy Failed*
 
-            📦 *Repository:* `${{ github.repository }}`
-            🌿 *Branch:* `${{ github.ref_name }}`
-            👤 *Committer:* `${{ github.actor }}`
+        📦 *Repository:* `${{ github.repository }}`
+        🌿 *Branch:* `${{ github.ref_name }}`
+        👤 *Committer:* `${{ github.actor }}`
 
-            📝 *Commit:*
-            `${{ github.event.head_commit.message }}`
+        📝 *Commit:*
+        `${{ github.event.head_commit.message }}`
 
-            🔗 *Commit:*
-            https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+        🔗 *Commit:*
+        https://github.com/${{ github.repository }}/commit/${{ github.sha }}
 
-            🖥 *Server:*
-            `${{ secrets.VPS_HOST }}`
+        🖥 *Server:*
+        `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3001`
+        🌐 *Application Port:* `3001`
 
-            🕒 *Finished:* `${{ env.FINISHED }}`
-            ⏱ *Duration:* `${{ env.DURATION }}`
+        🕒 *Finished:* `${{ env.FINISHED }}`
+        ⏱ *Duration:* `${{ env.DURATION }}`
 
-            🚨 *Status:* ❌ FAILED
+        🚨 *Status:* ❌ FAILED
 
-            👉 *Check GitHub Actions:*
-            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        👉 *Check GitHub Actions:*
+        https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 ```
