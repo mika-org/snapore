@@ -28,13 +28,7 @@ jobs:
           script: |
             set -e
 
-            # Load NVM & Node environment jika ada
-            export NVM_DIR="$HOME/.nvm"
-            if [ -s "$NVM_DIR/nvm.sh" ]; then
-              . "$NVM_DIR/nvm.sh"
-            fi
-
-            cd /var/www/html/photobooth
+            cd /var/www/html/sekolah-tk-2
 
             git pull origin main
 
@@ -42,12 +36,9 @@ jobs:
 
             npm run build
 
-            # Check status PM2 secara aman tanpa membuat script crash
-            if pm2 describe photobooth >/dev/null 2>&1; then
-              echo "Restarting photobooth process..."
+            if pm2 describe photobooth > /dev/null 2>&1; then
               PORT=3001 pm2 restart photobooth --update-env
             else
-              echo "Starting photobooth process for the first time..."
               PORT=3001 pm2 start npm --name photobooth -- start
             fi
 
@@ -99,7 +90,7 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3001`
+            🌐 *Application Port:* `3002`
 
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
@@ -131,7 +122,7 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3001`
+            🌐 *Application Port:* `3002`
 
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
