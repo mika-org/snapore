@@ -36,9 +36,12 @@ jobs:
 
             npm run build
 
-            if pm2 describe photobooth > /dev/null 2>&1; then
+            # Menggunakan pm2 jlist untuk pengecekan aman tanpa memicu exit code 1
+            if pm2 jlist | grep -q '"name":"photobooth"'; then
+              echo "Restarting photobooth..."
               PORT=3001 pm2 restart photobooth --update-env
             else
+              echo "Starting photobooth for the first time..."
               PORT=3001 pm2 start npm --name photobooth -- start
             fi
 
@@ -90,7 +93,7 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3002`
+            🌐 *Application Port:* `3001`
 
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
@@ -122,7 +125,7 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
-            🌐 *Application Port:* `3002`
+            🌐 *Application Port:* `3001`
 
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
