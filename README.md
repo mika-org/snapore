@@ -1,4 +1,4 @@
-# Snapore Photobooth — Master Prompt dan Spesifikasi Sistem
+# Snapore Photobooth — Master Prompt dan Spesifikasi Sistem 
 
 > Status dokumen: **implementasi MVP dimulai pada 4 Agustus 2026** setelah pemilik project memberikan perintah **"mulai implementasi"**. Bagian spesifikasi di bawah tetap menjadi source of truth untuk fase lanjutan.
 
