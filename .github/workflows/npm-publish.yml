@@ -29,7 +29,7 @@ jobs:
           script: |
             set -e
 
-            cd /var/www/html/photobooth
+            cd /var/www/html/snapore
 
             git pull origin main
 
@@ -37,10 +37,10 @@ jobs:
 
             npm run build
 
-            if pm2 describe photobooth > /dev/null 2>&1; then
-              PORT=3001 pm2 restart photobooth --update-env
+            if pm2 describe snapore > /dev/null 2>&1; then
+              PORT=3001 pm2 restart snapore --update-env
             else
-              PORT=3001 pm2 start npm --name photobooth -- start
+              PORT=3001 pm2 start npm --name snapore -- start
             fi
 
             pm2 save
