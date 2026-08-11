@@ -1,6 +1,12 @@
 import { clearSessionCaptures, saveOfflineCapture, saveOfflineJob } from "@/lib/offline-db";
+import { serverApiUrl } from "@/domain/upload-destination";
 
 const agentUrl = process.env.NEXT_PUBLIC_DEVICE_AGENT_URL ?? "http://127.0.0.1:4545";
+const onlineServerUrl = process.env.NEXT_PUBLIC_SNAPORE_SERVER_URL;
+
+function onlineApi(path: string) {
+  return serverApiUrl(onlineServerUrl, path);
+}
 
 export type AgentHealth = {
   online: boolean;
@@ -247,7 +253,7 @@ export async function syncSessionFromBrowser(input: {
     frameId: input.frameId,
     dnpTwoInchCut: input.dnpTwoInchCut,
     captures: input.captures.map(({ id, slotIndex, revision }) => ({ id, slotIndex, revision, active: true })),
-    localPrintJob: { id: input.printJobId, copies: input.copies, status: "QUEUED", dnpTwoInchCut: input.dnpTwoInchCut },
+    printJob: { id: input.printJobId, copies: input.copies, status: "QUEUED", dnpTwoInchCut: input.dnpTwoInchCut },
   }));
   input.captures.forEach((capture) => {
     const extension = capture.blob.type === "image/png" ? "png" : capture.blob.type === "image/webp" ? "webp" : "jpg";
@@ -256,7 +262,7 @@ export async function syncSessionFromBrowser(input: {
   const compositeExtension = input.composite.type === "image/png" ? "png" : input.composite.type === "image/webp" ? "webp" : "jpg";
   form.append("assets", input.composite, `composite-${input.printJobId}.${compositeExtension}`);
 
-  const response = await fetch("/api/sync/sessions", {
+  const response = await fetch(onlineApi("/api/sync/sessions"), {
     method: "POST",
     body: form,
     signal: AbortSignal.timeout(20_000),
@@ -269,7 +275,7 @@ export async function syncSessionFromBrowser(input: {
 export async function getServerSyncStatus(boothId: string, sessionId: string) {
   try {
     const query = new URLSearchParams({ boothId, sessionId });
-    const response = await fetch(`/api/sync/sessions?${query.toString()}`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
+    const response = await fetch(`${onlineApi("/api/sync/sessions")}?${query.toString()}`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
     if (!response.ok) return null;
     return await response.json() as { status: string; galleryUrl?: string; lastError?: string | null };
   } catch {

@@ -1,5 +1,26 @@
 # HOW TO — Snapore
 
+## Upload online setelah print
+
+Saat tombol **Confirm & print** ditekan, Snapore membuat print job dan upload job secara bersamaan. Jika internet tersedia, seluruh foto raw serta composite hasil print dikirim ke API server online dan disimpan berdasarkan pola:
+
+`https://photobooth.elevore.web.id/uploads/{boothCode}/{sessionId}/{fileName}`
+
+Jika koneksi terputus, job tetap berada di antrean lokal dengan status **RETRYING** dan device agent akan mengunggahnya otomatis ketika server kembali dapat dijangkau.
+
+Konfigurasi yang digunakan:
+
+| Environment | Fungsi |
+| --- | --- |
+| `NEXT_PUBLIC_SNAPORE_SERVER_URL` | Tujuan API upload untuk browser fallback/desktop kiosk. |
+| `SNAPORE_SERVER_URL` | Tujuan API upload untuk device agent. |
+| `SNAPORE_SERVER_UPLOAD_DIR` | Folder fisik pada server tempat file ditulis. Folder ini harus dipetakan web server ke `/uploads/`. |
+| `SNAPORE_PUBLIC_UPLOAD_BASE_URL` | Base URL publik file hasil upload. |
+| `SNAPORE_PUBLIC_APP_URL` | Domain publik untuk link galeri QR. |
+| `SNAPORE_UPLOAD_ALLOWED_ORIGINS` | Daftar origin kiosk yang boleh melakukan upload lintas domain; pisahkan dengan koma atau gunakan `*`. |
+
+Untuk production, pastikan proses Next.js memiliki izin tulis pada `SNAPORE_SERVER_UPLOAD_DIR`. URL `/uploads/` adalah lokasi publik file, sedangkan pengiriman file dilakukan melalui endpoint `POST /api/sync/sessions` pada domain server.
+
 ## Melanjutkan sesi setelah refresh
 
 Kiosk menyimpan langkah aktif dan foto sesi secara lokal. Jika halaman direfresh, aplikasi akan menampilkan **Memulihkan sesi photobooth...** lalu kembali ke langkah terakhir—bukan ke layar **Touch to start**.

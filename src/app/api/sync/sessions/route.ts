@@ -7,6 +7,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { remainingPaperAfterPrint } from "@/domain/paper-counter";
+import { publicAppUrl, publicUploadUrl } from "@/domain/upload-destination";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,12 +21,46 @@ function hash(input: Uint8Array | string) {
   return createHash("sha256").update(input).digest("hex");
 }
 
-async function createGalleryUrl(galleryId: string, expiresAt: Date) {
+async function createGalleryUrl(galleryId: string, expiresAt: Date, requestOrigin: string) {
   const publicToken = randomBytes(24).toString("base64url");
   await prisma.galleryToken.create({
     data: { galleryId, tokenHash: hash(publicToken), expiresAt },
   });
-  return `/g/${publicToken}`;
+  return publicAppUrl(process.env.SNAPORE_PUBLIC_APP_URL, `/g/${publicToken}`, requestOrigin);
+}
+
+function allowedUploadOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  if (origin === new URL(request.url).origin) return true;
+  const configured = (process.env.SNAPORE_UPLOAD_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.includes("*") || configured.includes(origin);
+}
+
+function uploadCorsHeaders(request: Request): Record<string, string> {
+  const origin = request.headers.get("origin");
+  if (!origin || !allowedUploadOrigin(request)) return {};
+  const wildcard = (process.env.SNAPORE_UPLOAD_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).includes("*");
+  return {
+    "access-control-allow-origin": wildcard ? "*" : origin,
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "content-type, x-snapore-device-token",
+    "access-control-max-age": "86400",
+    vary: "Origin",
+  };
+}
+
+function jsonResponse(request: Request, body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  Object.entries(uploadCorsHeaders(request)).forEach(([name, value]) => headers.set(name, value));
+  return NextResponse.json(body, { ...init, headers });
+}
+
+export function OPTIONS(request: Request) {
+  return new NextResponse(null, { status: allowedUploadOrigin(request) ? 204 : 403, headers: uploadCorsHeaders(request) });
 }
 
 async function atomicWrite(destination: string, bytes: Uint8Array) {
@@ -37,6 +72,8 @@ async function atomicWrite(destination: string, bytes: Uint8Array) {
 
 export async function POST(request: Request) {
   const expectedToken = process.env.SNAPORE_DEVICE_TOKEN;
+
+  if (!allowedUploadOrigin(request)) return jsonResponse(request, { error: "Origin kiosk tidak diizinkan" }, { status: 403 });
 
   try {
     const form = await request.formData();
@@ -64,7 +101,7 @@ export async function POST(request: Request) {
       && booth.kioskEnabled
       && booth.tenant.status === "ACTIVE";
     if (!validDeviceToken && !validKioskLink) {
-      return NextResponse.json({ error: "Otorisasi sinkronisasi tidak valid" }, { status: 401 });
+      return jsonResponse(request, { error: "Otorisasi sinkronisasi tidak valid" }, { status: 401 });
     }
 
     const uploadRoot = resolve(/* turbopackIgnore: true */ process.env.SNAPORE_SERVER_UPLOAD_DIR ?? "./server-uploads");
@@ -72,7 +109,7 @@ export async function POST(request: Request) {
     const manifestCaptures = Array.isArray(manifest.captures)
       ? manifest.captures.filter((capture): capture is { id?: string; slotIndex?: number; revision?: number } => Boolean(capture) && typeof capture === "object")
       : [];
-    const assetRecords: Array<{ fileName: string; kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; byteSize: number; checksum: string; objectKey: string; localPath: string; width: number; height: number; slotIndex: number | null; revision: number | null }> = [];
+    const assetRecords: Array<{ fileName: string; kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; byteSize: number; checksum: string; objectKey: string; publicUrl: string | null; localPath: string; width: number; height: number; slotIndex: number | null; revision: number | null }> = [];
 
     for (const file of files) {
       const fileName = safeSegment(file.name.replace(/\.[^.]+$/, ""));
@@ -84,13 +121,15 @@ export async function POST(request: Request) {
       const imageMetadata = await sharp(bytes).metadata().catch(() => null);
       const captureMetadata = manifestCaptures.find((capture) => capture.id === fileName);
       const originalIndex = assetRecords.filter((asset) => asset.kind === "ORIGINAL").length;
+      const objectKey = `${boothCode}/${sessionId}/${fileName}${extension}`;
       assetRecords.push({
         fileName,
         kind: fileName.startsWith("composite-") ? "COMPOSITE" : "ORIGINAL",
         mimeType: file.type || "image/jpeg",
         byteSize: bytes.length,
         checksum: hash(bytes),
-        objectKey: `${boothCode}/${sessionId}/${fileName}${extension}`,
+        objectKey,
+        publicUrl: publicUploadUrl(process.env.SNAPORE_PUBLIC_UPLOAD_BASE_URL, objectKey),
         localPath: destination,
         width: imageMetadata?.width ?? 0,
         height: imageMetadata?.height ?? 0,
@@ -126,7 +165,7 @@ export async function POST(request: Request) {
             width: asset.width,
             height: asset.height,
             localPath: asset.localPath,
-            metadata: { revision: asset.revision, objectKey: asset.objectKey },
+            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl },
           },
           create: {
             id: z.uuid().safeParse(asset.fileName).success ? asset.fileName : randomUUID(),
@@ -138,7 +177,7 @@ export async function POST(request: Request) {
             checksum: asset.checksum,
             localPath: asset.localPath,
             source: "MEDIA_DEVICE",
-            metadata: { revision: asset.revision, objectKey: asset.objectKey },
+            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl },
           },
         })
         : null;
@@ -168,15 +207,15 @@ export async function POST(request: Request) {
       if (manifestPrintJob?.id) {
         const device = await prisma.device.findFirst({ where: { boothId: booth.id, type: "PRINTER", preferred: true }, orderBy: { createdAt: "asc" } });
         const copies = Math.max(1, manifestPrintJob.copies ?? order.copies);
-        const printFailed = manifestPrintJob.status === "FAILED";
+        const printStatus = manifestPrintJob.status === "FAILED" ? "FAILED" : manifestPrintJob.status === "PRINTED" ? "PRINTED" : "QUEUED";
         await prisma.$transaction(async (tx) => {
           const existingJob = await tx.printJob.findUnique({ where: { idempotencyKey: manifestPrintJob.id! }, select: { status: true } });
           await tx.printJob.upsert({
             where: { idempotencyKey: manifestPrintJob.id! },
-            update: { status: printFailed ? "FAILED" : "PRINTED", printedAt: printFailed ? null : new Date(), deviceId: device?.id },
-            create: { id: manifestPrintJob.id!, orderId: order.id, compositionId: composition.id, deviceId: device?.id, idempotencyKey: manifestPrintJob.id!, copies, status: printFailed ? "FAILED" : "PRINTED", printedAt: printFailed ? null : new Date() },
+            update: { status: printStatus, printedAt: printStatus === "PRINTED" ? new Date() : null, deviceId: device?.id },
+            create: { id: manifestPrintJob.id!, orderId: order.id, compositionId: composition.id, deviceId: device?.id, idempotencyKey: manifestPrintJob.id!, copies, status: printStatus, printedAt: printStatus === "PRINTED" ? new Date() : null },
           });
-          if (!printFailed && existingJob?.status !== "PRINTED" && device) {
+          if (printStatus === "PRINTED" && existingJob?.status !== "PRINTED" && device) {
             const paper = await tx.paperCounter.findUnique({ where: { deviceId: device.id }, select: { currentSheets: true } });
             if (paper) {
               await tx.paperCounter.update({ where: { deviceId: device.id }, data: { currentSheets: remainingPaperAfterPrint(paper.currentSheets, copies) } });
@@ -197,16 +236,17 @@ export async function POST(request: Request) {
       update: { active: true, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
       create: { sessionId, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
     });
-    const galleryUrl = await createGalleryUrl(gallery.id, gallery.expiresAt);
+    const galleryUrl = await createGalleryUrl(gallery.id, gallery.expiresAt, new URL(request.url).origin);
 
-    return NextResponse.json({
+    return jsonResponse(request, {
       sessionId: session.id,
       status: "SYNCED",
       galleryUrl,
       assetCount: assetRecords.length,
+      uploads: assetRecords.map((asset) => ({ kind: asset.kind, objectKey: asset.objectKey, url: asset.publicUrl })),
     });
   } catch (error) {
-    return NextResponse.json({ error: "Sinkronisasi gagal", detail: error instanceof Error ? error.message : undefined }, { status: 400 });
+    return jsonResponse(request, { error: "Sinkronisasi gagal", detail: error instanceof Error ? error.message : undefined }, { status: 400 });
   }
 }
 
@@ -215,7 +255,7 @@ export async function GET(request: Request) {
   const sessionId = searchParams.get("sessionId") ?? "";
   const boothId = searchParams.get("boothId") ?? "";
   if (!z.uuid().safeParse(sessionId).success || !z.uuid().safeParse(boothId).success) {
-    return NextResponse.json({ error: "Identitas sinkronisasi tidak valid" }, { status: 400 });
+    return jsonResponse(request, { error: "Identitas sinkronisasi tidak valid" }, { status: 400 });
   }
 
   const session = await prisma.photoSession.findFirst({
@@ -229,14 +269,14 @@ export async function GET(request: Request) {
       uploadJobs: { orderBy: { updatedAt: "desc" }, take: 1 },
     },
   });
-  if (!session) return NextResponse.json({ status: "WAITING_FOR_SYNC" });
+  if (!session) return jsonResponse(request, { status: "WAITING_FOR_SYNC" });
 
   if (session.gallery?.active && session.gallery.expiresAt > new Date()) {
-    const galleryUrl = await createGalleryUrl(session.gallery.id, session.gallery.expiresAt);
-    return NextResponse.json({ status: "SYNCED", galleryUrl });
+    const galleryUrl = await createGalleryUrl(session.gallery.id, session.gallery.expiresAt, new URL(request.url).origin);
+    return jsonResponse(request, { status: "SYNCED", galleryUrl });
   }
 
-  return NextResponse.json({
+  return jsonResponse(request, {
     status: session.uploadJobs[0]?.status ?? "WAITING_FOR_SYNC",
     lastError: session.uploadJobs[0]?.lastError ?? null,
   });
