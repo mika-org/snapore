@@ -1,3 +1,4 @@
+```yaml
 name: Deploy
 
 on:
@@ -37,7 +38,13 @@ jobs:
 
             npm run build
 
-            pm2 restart photobooth
+            if pm2 describe photobooth > /dev/null 2>&1; then
+              PORT=3001 pm2 restart photobooth --update-env
+            else
+              PORT=3001 pm2 start npm --name photobooth -- start
+            fi
+
+            pm2 save
 
       - name: Calculate Duration
         if: always()
@@ -85,6 +92,8 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
+            🌐 *Application Port:* `3001`
+
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
 
@@ -115,6 +124,8 @@ jobs:
             🖥 *Server:*
             `${{ secrets.VPS_HOST }}`
 
+            🌐 *Application Port:* `3001`
+
             🕒 *Finished:* `${{ env.FINISHED }}`
             ⏱ *Duration:* `${{ env.DURATION }}`
 
@@ -122,3 +133,4 @@ jobs:
 
             👉 *Check GitHub Actions:*
             https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+```
