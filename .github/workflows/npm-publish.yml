@@ -28,10 +28,11 @@ jobs:
           script: |
             set -e
 
-            # Export PATH NVM/Node agar PM2 pasti terdeteksi di SSH non-interactive
+            # Load NVM & Node environment jika ada
             export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-            export PATH=$PATH:/usr/local/bin:~/.nvm/versions/node/$(node -v 2>/dev/null)/bin
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              . "$NVM_DIR/nvm.sh"
+            fi
 
             cd /var/www/html/photobooth
 
@@ -39,16 +40,15 @@ jobs:
 
             npm ci
 
-            # Tambahkan batas memory Node agar tidak terkena OOM Killer saat build
-            NODE_OPTIONS="--max-old-space-size=2048" npm run build
+            npm run build
 
-            # Gunakan direct npx next start alih-alih npm start
-            if pm2 list | grep -q "photobooth"; then
-              echo "Restarting photobooth..."
+            # Check status PM2 secara aman tanpa membuat script crash
+            if pm2 describe photobooth >/dev/null 2>&1; then
+              echo "Restarting photobooth process..."
               PORT=3001 pm2 restart photobooth --update-env
             else
-              echo "Starting photobooth for the first time..."
-              PORT=3001 pm2 start npx --name "photobooth" -- next start -p 3001
+              echo "Starting photobooth process for the first time..."
+              PORT=3001 pm2 start npm --name photobooth -- start
             fi
 
             pm2 save
