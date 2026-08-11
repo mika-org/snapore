@@ -28,21 +28,27 @@ jobs:
           script: |
             set -e
 
+            # Export PATH NVM/Node agar PM2 pasti terdeteksi di SSH non-interactive
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            export PATH=$PATH:/usr/local/bin:~/.nvm/versions/node/$(node -v 2>/dev/null)/bin
+
             cd /var/www/html/photobooth
 
             git pull origin main
 
             npm ci
 
-            npm run build
+            # Tambahkan batas memory Node agar tidak terkena OOM Killer saat build
+            NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
-            # Menggunakan pm2 jlist untuk pengecekan aman tanpa memicu exit code 1
-            if pm2 jlist | grep -q '"name":"photobooth"'; then
+            # Gunakan direct npx next start alih-alih npm start
+            if pm2 list | grep -q "photobooth"; then
               echo "Restarting photobooth..."
               PORT=3001 pm2 restart photobooth --update-env
             else
               echo "Starting photobooth for the first time..."
-              PORT=3001 pm2 start npm --name photobooth -- start
+              PORT=3001 pm2 start npx --name "photobooth" -- next start -p 3001
             fi
 
             pm2 save
