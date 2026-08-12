@@ -1,5 +1,70 @@
 # HOW TO — Snapore
 
+## Canon EOS R100 tanpa EDSDK (gPhoto2/PTP)
+
+Snapore memakai **Picture Transfer Protocol (PTP)** melalui gPhoto2. Alurnya adalah Electron/Next.js → HTTP device agent → gPhoto2/PTP → Canon R100 melalui USB. EDSDK, `EDSDK.dll`, dan bridge Canon tidak digunakan.
+
+### Persiapan Windows 11
+
+1. Pasang WSL 2 + Ubuntu, lalu dari Ubuntu jalankan:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y gphoto2 libgphoto2-6
+   gphoto2 --version
+   ```
+
+2. Pasang `usbipd-win` dari PowerShell:
+
+   ```powershell
+   winget install usbipd
+   usbipd list
+   ```
+
+3. Cari `BUSID` Canon EOS R100. Satu kali saja, jalankan PowerShell sebagai Administrator:
+
+   ```powershell
+   usbipd bind --busid <BUSID>
+   ```
+
+4. Setiap kamera dipasang kembali atau komputer restart, buka Ubuntu agar WSL aktif lalu jalankan PowerShell biasa:
+
+   ```powershell
+   usbipd attach --wsl --busid <BUSID>
+   wsl --exec gphoto2 --auto-detect
+   ```
+
+   Selama R100 attached ke WSL, kamera tidak bisa digunakan bersamaan oleh aplikasi Windows lain. Tutup EOS Utility/EOS Webcam Utility sebelum attach.
+
+### Konfigurasi Snapore
+
+Isi `%APPDATA%\Snapore Desktop\snapore.env`:
+
+```env
+SNAPORE_CAMERA_PTP_MODE="wsl"
+SNAPORE_GPHOTO2_PATH="gphoto2"
+SNAPORE_GPHOTO2_WSL_DISTRO=""
+SNAPORE_GPHOTO2_IMAGE_FORMAT=""
+SNAPORE_CAMERA_USBIPD_AUTO_ATTACH="true"
+SNAPORE_CAMERA_PREFERRED_MODEL="EOS R100"
+SNAPORE_CAMERA_AUTO_SWITCH="true"
+SNAPORE_CAMERA_CAPTURE_TIMEOUT_MS="45000"
+```
+
+Jika ada lebih dari satu distro, isi `SNAPORE_GPHOTO2_WSL_DISTRO`, misalnya `Ubuntu-24.04`. Untuk Linux native atau build gPhoto2 Windows yang kompatibel, gunakan `SNAPORE_CAMERA_PTP_MODE="native"` dan arahkan `SNAPORE_GPHOTO2_PATH` ke executable.
+
+Atur mode kamera ke foto (P/Av/Tv/M), matikan Wi-Fi/Bluetooth kamera jika koneksi USB tidak stabil, dan pilih kualitas JPEG atau RAW+JPEG. Jika kamera hanya menghasilkan RAW, isi `SNAPORE_GPHOTO2_IMAGE_FORMAT` sesuai pilihan yang tampil dari `gphoto2 --get-config imageformat`, atau ubah kualitas langsung pada kamera.
+
+Perilaku otomatis:
+
+- Device agent mendeteksi model dan port R100 setiap lima detik.
+- Jika R100 berstatus `Shared`, device agent otomatis menjalankan `usbipd attach --wsl`; `bind` Administrator hanya perlu dilakukan sekali.
+- R100 yang tersambung dipilih otomatis, shutter dipicu, lalu foto langsung diunduh dalam panggilan yang sama.
+- Jika R100 dilepas atau capture gagal, kiosk beralih ke kamera bawaan laptop.
+- Saat R100 kembali, device agent mengaktifkannya lagi tanpa restart aplikasi.
+
+Setelah mengubah `snapore.env`, tutup lalu buka kembali Snapore Desktop.
+
 ## Upload online setelah print
 
 Saat tombol **Confirm & print** ditekan, Snapore membuat print job dan upload job secara bersamaan. Jika internet tersedia, seluruh foto raw serta composite hasil print dikirim ke API server online dan disimpan berdasarkan pola:

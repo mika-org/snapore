@@ -36,7 +36,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import QRCode from "qrcode";
-import { selectPreferredBrowserCamera } from "@/domain/camera-selection";
+import { selectPreferredAgentCamera, selectPreferredBrowserCamera } from "@/domain/camera-selection";
 import type { FrameCatalogResponse } from "@/domain/frame-catalog";
 import { calculateSaleFinance } from "@/domain/finance";
 import { kioskStepVoiceAsset, kioskVoiceAsset, retakeVoiceAsset } from "@/domain/kiosk-voice";
@@ -289,6 +289,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraLabel, setCameraLabel] = useState("Auto camera");
   const [agentCamera, setAgentCamera] = useState<{ id: string; name: string; kind?: string } | null>(null);
+  const [cameraBridgeDegraded, setCameraBridgeDegraded] = useState(false);
   const [hardwareReport, setHardwareReport] = useState<KioskHardwareReport | null>(null);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
@@ -705,8 +706,20 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       const health = await getAgentHealth();
       if (active) {
         setAgentOnline(health.online);
-        const sdkCamera = health.devices?.find((device) => device.type === "CAMERA" && device.id !== "browser-camera" && device.status === "ONLINE");
-        setAgentCamera(sdkCamera ? { id: sdkCamera.id, name: sdkCamera.name, kind: sdkCamera.kind } : null);
+        const bridgeConfigured = Boolean(
+          health.cameraBridge?.backend?.ptpGphoto2
+          || health.cameraBridge?.backend?.vendorBridge
+          || health.cameraBridge?.sdk?.canonEdsdk,
+        );
+        const bridgeDegraded = Boolean(bridgeConfigured && health.cameraBridge?.status !== "ONLINE");
+        setCameraBridgeDegraded(bridgeDegraded);
+        const sdkCamera = selectPreferredAgentCamera(health.devices);
+        const nextAgentCamera = sdkCamera ? { id: sdkCamera.id, name: sdkCamera.name, kind: sdkCamera.kind } : null;
+        setAgentCamera((current) => (
+          current?.id === nextAgentCamera?.id && current?.name === nextAgentCamera?.name && current?.kind === nextAgentCamera?.kind
+            ? current
+            : nextAgentCamera
+        ));
         const connectedPrinter = health.devices?.find((device) =>
           device.type === "PRINTER"
           && (device.id === health.printerBridge?.connectedDeviceId || device.name === health.printerBridge?.connectedDeviceName),
@@ -725,7 +738,9 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           driverName: typeof sdkCamera.capabilities?.driverName === "string" ? sdkCamera.capabilities.driverName : null,
           width: typeof sdkCamera.capabilities?.width === "number" ? sdkCamera.capabilities.width : undefined,
           height: typeof sdkCamera.capabilities?.height === "number" ? sdkCamera.capabilities.height : undefined,
-        } : browserCameraReportRef.current;
+        } : browserCameraReportRef.current
+          ? { ...browserCameraReportRef.current, driverName: bridgeDegraded ? "Browser fallback · PTP camera service offline" : null }
+          : null;
         try {
           const report = await reportKioskHardware(booth.id, {
             kioskInstanceId: kioskInstanceIdRef.current,
@@ -766,7 +781,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           audio: false,
         });
         const devices = await navigator.mediaDevices.enumerateDevices();
-        const preferred = selectPreferredBrowserCamera(devices, navigator.userAgent);
+        const preferred = selectPreferredBrowserCamera(devices, navigator.userAgent, { avoidSdkControlledCamera: Boolean(agentCamera) });
         const activeDeviceId = stream.getVideoTracks()[0]?.getSettings().deviceId;
         if (preferred?.deviceId && preferred.deviceId !== activeDeviceId) {
           stream.getTracks().forEach((track) => track.stop());
@@ -815,7 +830,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       if (browserCameraReportRef.current) browserCameraReportRef.current.status = "OFFLINE";
       setCameraReady(false);
     };
-  }, [step]);
+  }, [agentCamera, step]);
 
   const runBrowserSync = useCallback(async () => {
     if (!composite || !jobIds || syncInFlightRef.current) return false;
@@ -918,6 +933,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       try {
         blob = await captureWithAgentCamera(agentCamera.id);
       } catch {
+        setAgentCamera(null);
         blob = await captureBrowserFrame(video, cameraReady, retakeIndex ?? photos.length);
       }
     } else {
@@ -1639,7 +1655,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
               {retakeIndex !== null && <button className="retake-back" onClick={cancelRetake}><X size={15} /> Cancel retake</button>}
               <div className="capture-headsup" aria-live="polite">
                 <span><Camera size={14} /> {retakeIndex === null ? `Pose ${Math.min(photos.length + 1, layout.count)} dari ${layout.count}` : `Ulang pose ${retakeIndex + 1}`}</span>
-                <span className="camera-source-chip" title={agentCamera ? `${agentCamera.kind ?? "SDK"} · ${agentCamera.name}` : cameraLabel}><Camera size={13} /> {agentCamera ? `${agentCamera.kind ?? "SDK"} · ${agentCamera.name}` : cameraLabel}</span>
+                <span className="camera-source-chip" title={agentCamera ? `${agentCamera.kind ?? "TETHERED"} · ${agentCamera.name}` : cameraLabel}><Camera size={13} /> {agentCamera ? `${agentCamera.kind ?? "TETHERED"} · ${agentCamera.name}` : cameraBridgeDegraded ? `Fallback · ${cameraLabel}` : cameraLabel}</span>
                 <span className={retakesRemaining === 0 ? "empty" : ""}><RefreshCw size={13} /> Retake {retakesRemaining}/{maxRetakes}</span>
               </div>
               <video className="camera-video" ref={videoRef} playsInline muted />

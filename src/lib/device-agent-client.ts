@@ -13,6 +13,16 @@ export type AgentHealth = {
   version?: string;
   storage?: { root: string; freeBytes?: number };
   devices?: Array<{ id: string; fingerprint?: string; type: string; kind?: string; name: string; status: string; capabilities?: Record<string, unknown> }>;
+  cameraBridge?: {
+    autoSwitch: boolean;
+    preferredModel: string;
+    connectedDeviceId: string | null;
+    connectedDeviceName: string | null;
+    status: string;
+    error: string | null;
+    backend?: { ptpGphoto2: boolean; ptpMode: "native" | "wsl" | null; vendorBridge: boolean };
+    sdk?: { canonEdsdk: boolean };
+  };
   printerBridge?: {
     configured: PrinterBridgeConfig | null;
     connectedDeviceId: string | null;
@@ -119,11 +129,11 @@ export async function captureWithAgentCamera(deviceId: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ deviceId }),
-    signal: AbortSignal.timeout(35_000),
+    signal: AbortSignal.timeout(70_000),
   });
   if (!response.ok) {
     const failure = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(failure?.error ?? "Capture kamera SDK gagal");
+    throw new Error(failure?.error ?? "Capture kamera tethered gagal");
   }
   return response.blob();
 }

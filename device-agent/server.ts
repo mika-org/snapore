@@ -5,7 +5,9 @@ import { mkdir, readFile, rename, statfs, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { MockPrinterAdapter, OsSpoolerPrinterAdapter } from "./adapters";
 import { SdkBridgeCameraAdapter } from "./camera-adapters";
+import { rankSdkCameras } from "./camera-selection";
 import type { CameraAdapter, DiscoveredDevice, PrinterAdapter } from "./contracts";
+import { Gphoto2CameraAdapter, type Gphoto2Mode } from "./gphoto2-camera-adapter";
 
 const port = Number(process.env.SNAPORE_AGENT_PORT ?? 4545);
 const dataRoot = resolve(process.env.SNAPORE_DATA_DIR ?? "./snapore-data");
@@ -14,6 +16,11 @@ const serverUrl = process.env.SNAPORE_SERVER_URL ?? "http://localhost:3000";
 const deviceToken = process.env.SNAPORE_DEVICE_TOKEN ?? "";
 const requireToken = process.env.SNAPORE_REQUIRE_AGENT_TOKEN === "true";
 const boothCode = process.env.SNAPORE_BOOTH_CODE ?? "BKK-001";
+const preferredCameraModel = process.env.SNAPORE_CAMERA_PREFERRED_MODEL?.trim() || "EOS R100";
+const cameraAutoSwitch = process.env.SNAPORE_CAMERA_AUTO_SWITCH !== "false";
+const cameraPtpSetting = process.env.SNAPORE_CAMERA_PTP_MODE?.trim().toLowerCase() || (process.platform === "win32" ? "wsl" : "native");
+const cameraPtpMode: Gphoto2Mode = cameraPtpSetting === "native" ? "native" : "wsl";
+const cameraPtpEnabled = cameraPtpSetting !== "disabled" && cameraPtpSetting !== "off";
 
 type CaptureRecord = {
   id: string;
@@ -177,17 +184,114 @@ const printer: PrinterAdapter = process.env.SNAPORE_PRINTER_MODE === "mock"
   ? new MockPrinterAdapter()
   : new OsSpoolerPrinterAdapter();
 const cameras: CameraAdapter[] = [
-  ...(process.env.SNAPORE_CANON_SDK_BRIDGE ? [new SdkBridgeCameraAdapter("CANON_EDSDK", process.env.SNAPORE_CANON_SDK_BRIDGE)] : []),
+  ...(cameraPtpEnabled ? [new Gphoto2CameraAdapter({
+    mode: cameraPtpMode,
+    executable: process.env.SNAPORE_GPHOTO2_PATH,
+    wslDistro: process.env.SNAPORE_GPHOTO2_WSL_DISTRO,
+    imageFormat: process.env.SNAPORE_GPHOTO2_IMAGE_FORMAT,
+    usbipdAutoAttach: process.env.SNAPORE_CAMERA_USBIPD_AUTO_ATTACH !== "false",
+  })] : []),
   ...(process.env.SNAPORE_CAMERA_SDK_BRIDGE ? [new SdkBridgeCameraAdapter(process.env.SNAPORE_CAMERA_SDK_KIND ?? "VENDOR_SDK", process.env.SNAPORE_CAMERA_SDK_BRIDGE)] : []),
 ];
 
+type SdkCameraEntry = { adapter: CameraAdapter; device: DiscoveredDevice };
+type SdkCameraConnection = { discovered: SdkCameraEntry[]; selected?: SdkCameraEntry; error?: string };
+
+let activeSdkCamera: SdkCameraEntry | null = null;
+let cameraOperation = Promise.resolve();
+let cameraOperationBusy = false;
+let lastDiscoveredSdkCameras: SdkCameraEntry[] = [];
+let lastCameraDiscoveryError: string | undefined;
+
+function withCameraOperation<T>(operation: () => Promise<T>) {
+  const execute = async () => {
+    cameraOperationBusy = true;
+    try {
+      return await operation();
+    } finally {
+      cameraOperationBusy = false;
+    }
+  };
+  const result = cameraOperation.then(execute, execute);
+  cameraOperation = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 async function discoverSdkCameras() {
-  const discovered: Array<{ adapter: CameraAdapter; device: DiscoveredDevice }> = [];
-  for (const adapter of cameras) {
-    const devices = await adapter.discover().catch(() => []);
-    devices.forEach((device) => discovered.push({ adapter, device }));
+  const results = await Promise.all(cameras.map(async (adapter) => {
+    try {
+      const devices = await adapter.discover();
+      return { entries: devices.map((device) => ({ adapter, device })), error: undefined };
+    } catch (error) {
+      return { entries: [] as SdkCameraEntry[], error: error instanceof Error ? error.message : `${adapter.kind} discovery gagal` };
+    }
+  }));
+  const discovered = results.flatMap(({ entries }) => entries);
+  lastCameraDiscoveryError = results.find(({ error }) => error)?.error;
+  lastDiscoveredSdkCameras = rankSdkCameras(discovered, preferredCameraModel);
+  return lastDiscoveredSdkCameras;
+}
+
+async function disconnectActiveSdkCamera() {
+  const current = activeSdkCamera;
+  activeSdkCamera = null;
+  if (current) await current.adapter.disconnect().catch(() => undefined);
+}
+
+async function ensureSdkCameraConnected(requestedDeviceId?: string, excludedDeviceIds = new Set<string>()): Promise<SdkCameraConnection> {
+  const discovered = await discoverSdkCameras();
+  const available = discovered.filter(({ device }) => device.status !== "OFFLINE" && !excludedDeviceIds.has(device.id));
+  const requested = requestedDeviceId ? available.find(({ device }) => device.id === requestedDeviceId) : undefined;
+  const active = activeSdkCamera ? available.find(({ device }) => device.id === activeSdkCamera?.device.id) : undefined;
+  const candidates = requested
+    ? [requested, ...available.filter(({ device }) => device.id !== requested.device.id)]
+    : !cameraAutoSwitch && active
+      ? [active, ...available.filter(({ device }) => device.id !== active.device.id)]
+      : available;
+
+  if (candidates.length === 0) {
+    await disconnectActiveSdkCamera();
+    return { discovered, error: lastCameraDiscoveryError };
   }
-  return discovered;
+
+  let lastError: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      if (activeSdkCamera?.device.id !== candidate.device.id) {
+        await disconnectActiveSdkCamera();
+        await candidate.adapter.connect(candidate.device.id);
+      }
+      const capabilities = await candidate.adapter.getCapabilities();
+      const selected = {
+        ...candidate,
+        device: {
+          ...candidate.device,
+          status: "ONLINE" as const,
+          capabilities: { ...candidate.device.capabilities, ...capabilities, autoSelected: true },
+        },
+      };
+      activeSdkCamera = selected;
+      return { discovered, selected };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Koneksi bridge kamera gagal";
+      await candidate.adapter.disconnect().catch(() => undefined);
+      if (activeSdkCamera?.device.id === candidate.device.id) activeSdkCamera = null;
+    }
+  }
+
+  return { discovered, error: lastError };
+}
+
+function sdkCameraHealthDevices(connection: SdkCameraConnection) {
+  return connection.discovered.map(({ device }) => ({
+    ...(connection.selected?.device.id === device.id ? connection.selected.device : device),
+    status: connection.selected?.device.id === device.id ? "ONLINE" as const : device.status,
+    capabilities: {
+      ...(connection.selected?.device.id === device.id ? connection.selected.device.capabilities : device.capabilities),
+      autoSelected: connection.selected?.device.id === device.id,
+      preferredModel: preferredCameraModel,
+    },
+  }));
 }
 
 function photoPrinterRank(device: DiscoveredDevice) {
@@ -339,7 +443,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/health") {
       const disk = await statfs(dataRoot).catch(() => null);
       const discovered = await printer.discover();
-      const sdkCameras = await discoverSdkCameras();
+      const cameraConnection = cameraOperationBusy
+        ? { discovered: lastDiscoveredSdkCameras, selected: activeSdkCamera ?? undefined, error: lastCameraDiscoveryError }
+        : await withCameraOperation(() => ensureSdkCameraConnected());
+      const sdkCameras = sdkCameraHealthDevices(cameraConnection);
       const state = await loadState();
       const connection = await ensurePrinterConnected({ respectAutoConnect: true }).catch(async (error) => ({
         device: undefined,
@@ -353,9 +460,22 @@ const server = createServer(async (req, res) => {
         storage: { root: dataRoot, freeBytes: disk ? disk.bavail * disk.bsize : undefined },
         devices: [
           { id: "browser-camera", type: "CAMERA", name: "Browser camera", status: "ONLINE" },
-          ...sdkCameras.map(({ device }) => device),
+          ...sdkCameras,
           ...discovered,
         ],
+        cameraBridge: {
+          autoSwitch: cameraAutoSwitch,
+          preferredModel: preferredCameraModel,
+          connectedDeviceId: cameraConnection.selected?.device.id ?? null,
+          connectedDeviceName: cameraConnection.selected?.device.name ?? null,
+          status: cameraConnection.selected ? "ONLINE" : cameras.length > 0 ? "DEGRADED" : "OFFLINE",
+          error: cameraConnection.error ?? null,
+          backend: {
+            ptpGphoto2: cameraPtpEnabled,
+            ptpMode: cameraPtpEnabled ? cameraPtpMode : null,
+            vendorBridge: Boolean(process.env.SNAPORE_CAMERA_SDK_BRIDGE),
+          },
+        },
         printerBridge: {
           configured: connection.config ?? null,
           connectedDeviceId: connection.device?.id ?? null,
@@ -398,27 +518,42 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && req.url === "/cameras") {
-      const discovered = await discoverSdkCameras();
-      json(res, 200, { cameras: discovered.map(({ device }) => device) });
+      const connection = await withCameraOperation(() => ensureSdkCameraConnected());
+      json(res, 200, {
+        cameras: sdkCameraHealthDevices(connection),
+        selectedCameraId: connection.selected?.device.id ?? null,
+        selectedCameraName: connection.selected?.device.name ?? null,
+        autoSwitch: cameraAutoSwitch,
+        error: connection.error ?? null,
+      });
       return;
     }
 
     if (req.method === "POST" && req.url === "/camera/capture") {
       const input = await readJson<{ deviceId?: string }>(req);
-      const discovered = await discoverSdkCameras();
-      const selected = input.deviceId
-        ? discovered.find(({ device }) => device.id === input.deviceId)
-        : discovered[0];
-      if (!selected) {
-        json(res, 404, { error: "Kamera SDK tidak ditemukan" });
+      const result = await withCameraOperation(async () => {
+        const initial = await ensureSdkCameraConnected(input.deviceId);
+        if (!initial.selected) return null;
+        try {
+          return { selected: initial.selected, capture: await initial.selected.adapter.capture(), switched: initial.selected.device.id !== input.deviceId && Boolean(input.deviceId) };
+        } catch (initialError) {
+          const failedDeviceId = initial.selected.device.id;
+          await disconnectActiveSdkCamera();
+          const fallback = await ensureSdkCameraConnected(undefined, new Set([failedDeviceId]));
+          if (!fallback.selected) throw initialError;
+          return { selected: fallback.selected, capture: await fallback.selected.adapter.capture(), switched: true };
+        }
+      });
+      if (!result) {
+        json(res, 404, { error: "Kamera PTP/tethered tidak ditemukan" });
         return;
       }
-      await selected.adapter.connect(selected.device.id);
-      const capture = await selected.adapter.capture();
       res.statusCode = 200;
-      res.setHeader("content-type", capture.mimeType);
-      res.setHeader("x-snapore-camera-id", selected.device.id);
-      res.end(capture.bytes);
+      res.setHeader("content-type", result.capture.mimeType);
+      res.setHeader("x-snapore-camera-id", result.selected.device.id);
+      res.setHeader("x-snapore-camera-name", encodeURIComponent(result.selected.device.name));
+      res.setHeader("x-snapore-camera-switched", String(result.switched));
+      res.end(result.capture.bytes);
       return;
     }
 
@@ -552,6 +687,12 @@ async function start() {
   await ensureRoot();
   setInterval(() => void processUploadQueue(), 10_000).unref();
   setInterval(() => void ensurePrinterConnected({ respectAutoConnect: true }).catch(() => undefined), 5_000).unref();
+  if (cameras.length > 0) {
+    setInterval(() => {
+      if (!cameraOperationBusy) void withCameraOperation(() => ensureSdkCameraConnected()).catch(() => undefined);
+    }, 5_000).unref();
+    void withCameraOperation(() => ensureSdkCameraConnected()).catch(() => undefined);
+  }
   void ensurePrinterConnected({ respectAutoConnect: true }).catch(() => undefined);
   server.listen(port, "127.0.0.1", () => {
     console.log(`Snapore device agent listening on http://127.0.0.1:${port}`);
