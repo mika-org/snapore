@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGphoto2AutoDetect, parseUsbipdCanonR100, windowsPathToWslPath } from "./gphoto2-camera-adapter";
+import { extractJpegFrames, isGphoto2OutputForPrefix, parseGphoto2AutoDetect, parseGphoto2CaptureChoices, parseGphoto2SummaryModel, parseUsbipdCanonR100, windowsPathToWslPath } from "./gphoto2-camera-adapter";
 
 describe("gPhoto2 PTP camera adapter", () => {
   it("parses Canon cameras and their USB ports", () => {
@@ -18,8 +18,45 @@ Canon EOS R50                  usb:002,003
     expect(parseGphoto2AutoDetect("Model                          Port\n----------------------------------------------------------\n")).toEqual([]);
   });
 
+  it("reads the real model from a generic PTP camera summary", () => {
+    expect(parseGphoto2SummaryModel(`
+Camera summary:
+Manufacturer: Canon.Inc
+Model: Canon EOS R100
+  Version: 3-1.0.2
+`)).toBe("Canon EOS R100");
+  });
+
   it("maps Windows capture paths into WSL", () => {
     expect(windowsPathToWslPath("D:\\Photos\\Snapore Test\\capture.jpg")).toBe("/mnt/d/Photos/Snapore Test/capture.jpg");
+  });
+
+  it("accepts normal capture and thumb-prefixed preview output", () => {
+    expect(isGphoto2OutputForPrefix("snapore-123.jpg", "snapore-123")).toBe(true);
+    expect(isGphoto2OutputForPrefix("thumb_snapore-123.jpg", "snapore-123")).toBe(true);
+    expect(isGphoto2OutputForPrefix("another-capture.jpg", "snapore-123")).toBe(false);
+  });
+
+  it("parses image and preview capture choices from Canon abilities", () => {
+    expect(parseGphoto2CaptureChoices(`
+Abilities for camera             : USB PTP Class Camera
+Capture choices                  :
+                                 : Image
+                                 : Preview
+Configuration support            : yes
+    `)).toEqual({ image: true, preview: true });
+  });
+
+  it("extracts complete JPEG frames and keeps a split frame for the next stream chunk", () => {
+    const first = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0xff, 0xd9]);
+    const secondStart = Buffer.from([0xff, 0xd8, 0xff, 0x02]);
+    const parsed = extractJpegFrames(Buffer.concat([Buffer.from("noise"), first, secondStart]));
+    expect(parsed.frames).toEqual([first]);
+    expect(parsed.remainder).toEqual(secondStart);
+
+    const completed = extractJpegFrames(Buffer.concat([parsed.remainder, Buffer.from([0x03, 0xff, 0xd9])]));
+    expect(completed.frames).toEqual([Buffer.from([0xff, 0xd8, 0xff, 0x02, 0x03, 0xff, 0xd9])]);
+    expect(completed.remainder).toHaveLength(0);
   });
 
   it("finds the R100 BUSID and sharing state from usbipd", () => {

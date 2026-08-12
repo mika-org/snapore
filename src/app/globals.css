@@ -406,10 +406,15 @@ button { color: inherit; }
 .capture-headsup .camera-source-chip { max-width: min(38%,280px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .retake-back + .capture-headsup { left: 152px; }
 .camera-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; transform: scaleX(-1); }
-.camera-placeholder { position: absolute; inset: 0; min-height: 0; display: grid; place-items: center; color: #858585; text-align: center; }
+.camera-agent-preview { z-index: 1; opacity: 0; transition: opacity 90ms linear; }
+.camera-agent-preview.is-ready { opacity: 1; }
+.camera-placeholder { position: absolute; z-index: 2; inset: 0; min-height: 0; display: grid; place-items: center; color: #858585; background: #0a0a0a; text-align: center; }
 .camera-placeholder div { max-width: 260px; }
 .camera-placeholder svg { margin-bottom: 15px; color: var(--coral); }
-.countdown { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink); background: rgba(185,247,107,.88); font-size: clamp(150px,25vw,310px); font-weight: 950; line-height: 1; }
+.camera-preview-live { position: absolute; z-index: 3; bottom: 132px; left: 18px; display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; color: white; background: rgba(18,18,18,.78); border: 1px solid rgba(255,255,255,.34); border-radius: 999px; backdrop-filter: blur(8px); font-size: 8px; font-weight: 950; letter-spacing: .08em; }
+.camera-preview-live i { width: 7px; height: 7px; background: var(--mint); border-radius: 50%; box-shadow: 0 0 0 4px rgba(185,247,107,.2); }
+.camera-preview-live.reconnecting i { background: var(--yellow); box-shadow: 0 0 0 4px rgba(255,217,90,.2); }
+.countdown { position: absolute; z-index: 6; inset: 0; display: grid; place-items: center; color: var(--ink); background: rgba(185,247,107,.88); font-size: clamp(150px,25vw,310px); font-weight: 950; line-height: 1; }
 .capture-controls { position: absolute; z-index: 4; left: 0; right: 0; bottom: 24px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; }
 .capture-controls > span { padding: 7px 11px; color: white; background: rgba(12,12,12,.76); border: 1px solid rgba(255,255,255,.28); border-radius: 999px; backdrop-filter: blur(8px); font-size: 9px; font-weight: 850; }
 .shutter-button { width: 88px; height: 88px; display: grid; place-items: center; color: var(--ink); background: var(--surface); border: 8px solid rgba(255,255,255,.28); outline: 3px solid white; border-radius: 50%; cursor: pointer; }

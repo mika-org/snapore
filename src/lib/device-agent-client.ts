@@ -138,6 +138,22 @@ export async function captureWithAgentCamera(deviceId: string) {
   return response.blob();
 }
 
+export async function previewWithAgentCamera(deviceId: string, signal?: AbortSignal) {
+  const timeoutSignal = AbortSignal.timeout(8_000);
+  const response = await fetch(`${agentUrl}/camera/preview`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId }),
+    cache: "no-store",
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(failure?.error ?? "Preview kamera tethered gagal");
+  }
+  return response.blob();
+}
+
 export async function persistCaptureLocally(input: {
   id: string;
   sessionId: string;
@@ -275,7 +291,7 @@ export async function syncSessionFromBrowser(input: {
   const response = await fetch(onlineApi("/api/sync/sessions"), {
     method: "POST",
     body: form,
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(120_000),
   });
   const payload = await response.json().catch(() => ({})) as { status?: string; galleryUrl?: string; error?: string; detail?: string };
   if (!response.ok) throw new Error(payload.detail ?? payload.error ?? `Sinkronisasi merespons ${response.status}`);
@@ -298,8 +314,8 @@ export async function getAgentJobs(sessionId: string) {
     const response = await fetch(`${agentUrl}/jobs`, { signal: AbortSignal.timeout(1500), cache: "no-store" });
     if (!response.ok) return null;
     const jobs = await response.json() as {
-      printJobs: Array<{ id: string; sessionId: string; status: string }>;
-      uploadJobs: Array<{ id: string; sessionId: string; status: string; galleryUrl?: string }>;
+      printJobs: Array<{ id: string; sessionId: string; status: string; error?: string }>;
+      uploadJobs: Array<{ id: string; sessionId: string; status: string; galleryUrl?: string; lastError?: string }>;
     };
     return {
       print: jobs.printJobs.find((job) => job.sessionId === sessionId),
@@ -308,4 +324,16 @@ export async function getAgentJobs(sessionId: string) {
   } catch {
     return null;
   }
+}
+
+export async function retryAgentUploadWithBooth(input: { uploadJobId: string; boothId: string; boothCode: string }) {
+  const response = await fetch(`${agentUrl}/jobs/upload/retry`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const payload = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+  if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? "Upload job gagal dijadwalkan ulang");
+  return payload;
 }

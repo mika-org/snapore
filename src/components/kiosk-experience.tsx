@@ -41,8 +41,9 @@ import type { FrameCatalogResponse } from "@/domain/frame-catalog";
 import { calculateSaleFinance } from "@/domain/finance";
 import { kioskStepVoiceAsset, kioskVoiceAsset, retakeVoiceAsset } from "@/domain/kiosk-voice";
 import { paymentAllowsSessionStart, paymentRequiresBypass } from "@/domain/payment-flow";
+import { newestKioskRecoveryCandidate, resolveKioskRecovery } from "@/domain/kiosk-session-recovery";
 import { composePrint } from "@/lib/compose";
-import { captureWithAgentCamera, clearLocalSessionProgress, createPrintAndUploadJobs, getAgentHealth, getAgentJobs, getServerSyncStatus, persistCaptureLocally, reportKioskHardware, syncSessionFromBrowser, type KioskHardwareReport } from "@/lib/device-agent-client";
+import { captureWithAgentCamera, clearLocalSessionProgress, createPrintAndUploadJobs, getAgentHealth, getAgentJobs, getServerSyncStatus, persistCaptureLocally, previewWithAgentCamera, reportKioskHardware, retryAgentUploadWithBooth, syncSessionFromBrowser, type KioskHardwareReport } from "@/lib/device-agent-client";
 import { calculateOrder, framePresets, getFrameAsset, getFrameGeometry, layoutPresets, transitionSession, type FramePreset, type KioskStep, type LayoutPreset } from "@/domain/session";
 import { formatSessionTimer, PAYMENT_WINDOW_SECONDS, remainingSeconds, renewSessionDeadline, SESSION_WINDOW_SECONDS } from "@/domain/session-timers";
 import { clampGestureValue, getGestureMetrics, getPhotoTransformGeometry, normalizeGestureAngle, type GesturePoint } from "@/domain/photo-gestures";
@@ -50,7 +51,7 @@ import { adjacentPhotoIndex, getPhotoKeyboardAction } from "@/domain/photo-edito
 import { normalizedKeyboardKey } from "@/domain/kiosk-shortcut";
 import { getSlotBleed } from "@/domain/layout-geometry";
 import { formatCurrency } from "@/lib/format";
-import { clearOfflineKioskSession, getOfflineKioskSession, getSessionCaptures, saveOfflineKioskSession } from "@/lib/offline-db";
+import { clearOfflineKioskSession, getOfflineKioskSession, getSessionCaptures, getSessionJobs, saveOfflineKioskSession, type OfflineKioskSession } from "@/lib/offline-db";
 
 type CapturedImage = {
   id: string;
@@ -105,7 +106,7 @@ type GestureState = {
 type SyncStatus = "IDLE" | "SYNCING" | "RETRYING" | "SYNCED";
 
 type PersistedKioskSession = {
-  version: 1;
+  version: 1 | 2;
   step: KioskStep;
   layout: LayoutPreset;
   frame: FramePreset;
@@ -130,7 +131,50 @@ type PersistedKioskSession = {
   sessionDeadline: number | null;
   sessionExpired: boolean;
   forceBrowserFallback: boolean;
+  bypassDialogOpen?: boolean;
+  resetDialogOpen?: boolean;
 };
+
+function kioskRecoveryShadowKey(boothId: string) {
+  return `snapore:kiosk-recovery:${boothId}`;
+}
+
+function readKioskRecoveryShadow(boothId: string): OfflineKioskSession<PersistedKioskSession> | null {
+  try {
+    const raw = window.localStorage.getItem(kioskRecoveryShadowKey(boothId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OfflineKioskSession<PersistedKioskSession>;
+    if (parsed.boothId !== boothId || !parsed.sessionId || !parsed.savedAt || !parsed.state) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeKioskRecoveryShadow(record: OfflineKioskSession<PersistedKioskSession>) {
+  try {
+    window.localStorage.setItem(kioskRecoveryShadowKey(record.boothId), JSON.stringify({
+      ...record,
+      state: { ...record.state, compositeBlob: null },
+    }));
+  } catch {
+    // IndexedDB remains the primary recovery store when localStorage is unavailable or full.
+  }
+}
+
+function clearKioskRecoveryShadow(boothId: string) {
+  try {
+    window.localStorage.removeItem(kioskRecoveryShadowKey(boothId));
+  } catch {
+    // A failed shadow cleanup must not block the explicit reset flow.
+  }
+}
+
+function samePersistedPhotos(left: PersistedKioskSession["photos"], right: PersistedKioskSession["photos"]) {
+  return left.length === right.length && left.every((photo, index) => (
+    photo.id === right[index]?.id && photo.slotIndex === right[index]?.slotIndex && photo.revision === right[index]?.revision
+  ));
+}
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -289,6 +333,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraLabel, setCameraLabel] = useState("Auto camera");
   const [agentCamera, setAgentCamera] = useState<{ id: string; name: string; kind?: string } | null>(null);
+  const [agentPreviewState, setAgentPreviewState] = useState<{ deviceId: string; status: "loading" | "ready" | "error"; error?: string } | null>(null);
   const [cameraBridgeDegraded, setCameraBridgeDegraded] = useState(false);
   const [hardwareReport, setHardwareReport] = useState<KioskHardwareReport | null>(null);
   const [captureBusy, setCaptureBusy] = useState(false);
@@ -335,6 +380,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const [copies, setCopies] = useState(1);
   const [composite, setComposite] = useState<{ blob: Blob; dataUrl: string } | null>(null);
   const [jobMode, setJobMode] = useState<"agent" | "browser-fallback" | null>(null);
+  const [forceBrowserFallback, setForceBrowserFallback] = useState(false);
   const [galleryUrl, setGalleryUrl] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("IDLE");
@@ -401,14 +447,19 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const printingTriggeredRef = useRef(false);
   const syncInFlightRef = useRef(false);
   const syncRetryCountRef = useRef(0);
+  const repairedUploadJobsRef = useRef(new Set<string>());
   const paymentStartedRef = useRef(false);
   const sessionStartedRef = useRef(false);
-  const forceBrowserFallbackRef = useRef(false);
   const voiceRequestRef = useRef(0);
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastVoiceRef = useRef<{ source: string; playedAt: number } | null>(null);
   const remoteVoiceEnabledRef = useRef(booth.voiceEnabled);
   const sessionPersistenceEnabledRef = useRef(false);
+  const latestSessionRecordRef = useRef<OfflineKioskSession<PersistedKioskSession> | null>(null);
+  const agentPreviewUrlRef = useRef<string | null>(null);
+  const agentPreviewImageRef = useRef<HTMLImageElement>(null);
+  const agentPreviewDeviceRef = useRef<string | null>(null);
+  const agentPreviewStatusRef = useRef<"loading" | "ready" | "error">("loading");
   const browserCameraReportRef = useRef<{
     fingerprint: string;
     name: string;
@@ -425,14 +476,37 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
 
     const restoreSession = async () => {
       try {
-        const saved = await Promise.race([
+        const databaseSaved = await Promise.race([
           getOfflineKioskSession<PersistedKioskSession>(booth.id),
           new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3_000)),
         ]);
-        if (!saved || saved.state.version !== 1 || saved.state.step === "IDLE") return;
+        const shadowSaved = readKioskRecoveryShadow(booth.id);
+        const selected = newestKioskRecoveryCandidate([databaseSaved, shadowSaved]);
+        if (!selected || ![1, 2].includes(selected.state.version) || selected.state.step === "IDLE") return;
+
+        const compatibleDatabaseComposite = selected === shadowSaved
+          && databaseSaved?.sessionId === selected.sessionId
+          && databaseSaved.state.compositeBlob
+          && databaseSaved.state.layout.id === selected.state.layout.id
+          && databaseSaved.state.frame.id === selected.state.frame.id
+          && samePersistedPhotos(databaseSaved.state.photos, selected.state.photos)
+          ? databaseSaved.state.compositeBlob
+          : null;
+        const saved: OfflineKioskSession<PersistedKioskSession> = {
+          boothId: booth.id,
+          ...selected,
+          state: {
+            ...selected.state,
+            compositeBlob: selected.state.compositeBlob ?? compatibleDatabaseComposite,
+          },
+        };
 
         const snapshot = saved.state;
-        const storedCaptures = await getSessionCaptures(saved.sessionId);
+        const [storedCaptures, storedJobs, agentJobs] = await Promise.all([
+          getSessionCaptures(saved.sessionId),
+          getSessionJobs(saved.sessionId).catch(() => []),
+          snapshot.step === "PRINTING" ? getAgentJobs(saved.sessionId) : Promise.resolve(null),
+        ]);
         const captureById = new Map(storedCaptures.map((capture) => [capture.id, capture]));
         const restoredPhotos: CapturedImage[] = [];
 
@@ -481,22 +555,41 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           if (!photo) break;
           compactPhotos.push(photo);
         }
-        let restoredStep = snapshot.step;
-        let restoredRetakeIndex = snapshot.retakeIndex;
-        let restoredRetakesUsed = snapshot.retakesUsed;
         const retakeCompletedAfterSnapshot = snapshot.retakeIndex !== null
           && Boolean(newestCaptureBySlot.get(snapshot.retakeIndex))
           && Number.isFinite(savedAt)
           && Date.parse(newestCaptureBySlot.get(snapshot.retakeIndex)!.createdAt) > savedAt;
-
-        if (restoredStep === "CAPTURE" && (retakeCompletedAfterSnapshot || (restoredRetakeIndex === null && compactPhotos.length >= snapshot.layout.count))) {
-          restoredStep = "REVIEW";
-          if (retakeCompletedAfterSnapshot) restoredRetakesUsed += 1;
-          restoredRetakeIndex = null;
-        }
-        if (["REVIEW", "CHECKOUT", "PRINTING"].includes(restoredStep) && compactPhotos.length < snapshot.layout.count) restoredStep = "CAPTURE";
-        if ((restoredStep === "CHECKOUT" || restoredStep === "PRINTING") && !snapshot.compositeBlob) restoredStep = "REVIEW";
-        if (restoredStep === "PRINTING") restoredStep = snapshot.jobIds ? "DONE" : "CHECKOUT";
+        const localJobIds = new Set(storedJobs.map((job) => job.id));
+        const localPrintJob = storedJobs.find((job) => job.type === "PRINT");
+        const localUploadJob = storedJobs.find((job) => job.type === "UPLOAD");
+        const hasSubmittedJob = Boolean(snapshot.jobMode || localPrintJob || agentJobs?.print || (snapshot.jobIds && (
+          localJobIds.has(snapshot.jobIds.printJobId)
+          || localJobIds.has(snapshot.jobIds.uploadJobId)
+          || agentJobs?.print?.id === snapshot.jobIds.printJobId
+          || agentJobs?.upload?.id === snapshot.jobIds.uploadJobId
+        )));
+        const recoveredJobMode = snapshot.jobMode
+          ?? (agentJobs?.print ? "agent" : localPrintJob ? "browser-fallback" : null);
+        const recoveredJobIds = snapshot.jobIds ?? (
+          agentJobs?.print && agentJobs.upload
+            ? { printJobId: agentJobs.print.id, uploadJobId: agentJobs.upload.id }
+            : localPrintJob && localUploadJob
+              ? { printJobId: localPrintJob.id, uploadJobId: localUploadJob.id }
+              : null
+        );
+        const recovery = resolveKioskRecovery({
+          step: snapshot.step,
+          photoCount: compactPhotos.length,
+          requiredPhotoCount: snapshot.layout.count,
+          hasComposite: Boolean(snapshot.compositeBlob),
+          hasSubmittedJob,
+          retakeIndex: snapshot.retakeIndex,
+          retakesUsed: snapshot.retakesUsed,
+          retakeCompletedAfterSnapshot,
+        });
+        const restoredStep = recovery.step;
+        const restoredRetakeIndex = recovery.retakeIndex;
+        const restoredRetakesUsed = recovery.retakesUsed;
 
         if (!active) return;
         setSessionId(saved.sessionId);
@@ -519,8 +612,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           createdUrls.push(compositeUrl);
           setComposite({ blob: snapshot.compositeBlob, dataUrl: compositeUrl });
         }
-        setJobMode(snapshot.jobMode);
-        setJobIds(snapshot.jobIds);
+        setJobMode(recoveredJobMode);
+        setJobIds(recoveredJobIds);
         setGalleryUrl(snapshot.galleryUrl);
         setSyncStatus(snapshot.syncStatus);
         setSyncError(snapshot.syncError);
@@ -528,17 +621,20 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
         const paymentExpired = snapshot.paymentExpiresAt !== null && snapshot.paymentExpiresAt <= Date.now();
         setPaymentStatus(paymentExpired && snapshot.paymentStatus === "PENDING" ? "EXPIRED" : snapshot.paymentStatus);
         setPaymentBypassRequired(snapshot.paymentBypassRequired);
+        setBypassDialogOpen(Boolean(snapshot.bypassDialogOpen || snapshot.paymentBypassRequired));
+        setResetDialogOpen(Boolean(snapshot.resetDialogOpen));
         setPaymentExpiresAt(snapshot.paymentExpiresAt);
         setPaymentRemaining(snapshot.paymentExpiresAt ? remainingSeconds(snapshot.paymentExpiresAt) : PAYMENT_WINDOW_SECONDS);
         const sessionExpiredNow = snapshot.sessionDeadline !== null && snapshot.sessionDeadline <= Date.now();
         setSessionDeadline(snapshot.sessionDeadline);
         setSessionRemaining(snapshot.sessionDeadline ? remainingSeconds(snapshot.sessionDeadline) : SESSION_WINDOW_SECONDS);
         setSessionExpired(snapshot.sessionExpired || sessionExpiredNow);
-        forceBrowserFallbackRef.current = snapshot.forceBrowserFallback;
+        setForceBrowserFallback(snapshot.forceBrowserFallback);
         paymentStartedRef.current = restoredStep === "PAYMENT" ? snapshot.paymentStatus === "PENDING" : restoredStep !== "IDLE";
         sessionStartedRef.current = !["IDLE", "PAYMENT"].includes(restoredStep);
-        printingTriggeredRef.current = restoredStep === "DONE" && Boolean(snapshot.jobIds);
+        printingTriggeredRef.current = restoredStep === "DONE" && hasSubmittedJob;
         sessionPersistenceEnabledRef.current = true;
+        latestSessionRecordRef.current = saved;
       } catch {
         // Corrupt or unavailable local recovery data must not block the kiosk.
       } finally {
@@ -768,6 +864,60 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   }, [booth.id]);
 
   useEffect(() => {
+    if (step !== "CAPTURE" || !agentCamera || captureBusy) return;
+    let active = true;
+    let timer: number | undefined;
+    let controller: AbortController | null = null;
+    const deviceId = agentCamera.id;
+    if (agentPreviewDeviceRef.current !== deviceId) {
+      agentPreviewDeviceRef.current = deviceId;
+      agentPreviewStatusRef.current = "loading";
+    }
+
+    const refreshPreview = async () => {
+      controller = new AbortController();
+      let retryDelay = 90;
+      try {
+        const blob = await previewWithAgentCamera(deviceId, controller.signal);
+        if (!active) return;
+        const nextUrl = URL.createObjectURL(blob);
+        const previousUrl = agentPreviewUrlRef.current;
+        agentPreviewUrlRef.current = nextUrl;
+        if (agentPreviewImageRef.current) agentPreviewImageRef.current.src = nextUrl;
+        if (agentPreviewStatusRef.current !== "ready") {
+          agentPreviewStatusRef.current = "ready";
+          setAgentPreviewState({ deviceId, status: "ready" });
+        }
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+      } catch (error) {
+        if (!active || (error instanceof DOMException && error.name === "AbortError")) return;
+        retryDelay = 1_200;
+        agentPreviewStatusRef.current = "error";
+        setAgentPreviewState({
+          deviceId,
+          status: "error",
+          error: error instanceof Error ? error.message : "Preview camera bridge terputus",
+        });
+      } finally {
+        controller = null;
+        if (active) timer = window.setTimeout(() => void refreshPreview(), retryDelay);
+      }
+    };
+
+    void refreshPreview();
+    return () => {
+      active = false;
+      controller?.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [agentCamera, captureBusy, step]);
+
+  useEffect(() => () => {
+    if (agentPreviewUrlRef.current) URL.revokeObjectURL(agentPreviewUrlRef.current);
+    agentPreviewUrlRef.current = null;
+  }, []);
+
+  useEffect(() => {
     if (step !== "CAPTURE") return;
     let cancelled = false;
     let generation = 0;
@@ -891,9 +1041,25 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
           setSyncStatus("SYNCED");
           return;
         }
-        if (jobs?.upload?.status === "RETRYING") {
+        const missingBoothIdentity = jobs?.upload?.lastError?.includes("Booth agent belum terdaftar pada tenant");
+        if (jobs?.upload && missingBoothIdentity && !repairedUploadJobsRef.current.has(jobs.upload.id)) {
+          repairedUploadJobsRef.current.add(jobs.upload.id);
+          try {
+            await retryAgentUploadWithBooth({ uploadJobId: jobs.upload.id, boothId: booth.id, boothCode: booth.code });
+            if (!active) return;
+            setSyncStatus("RETRYING");
+            setSyncError("Identitas booth diperbarui. Upload dijalankan ulang sekarang.");
+          } catch (error) {
+            repairedUploadJobsRef.current.delete(jobs.upload.id);
+            if (!active) return;
+            setSyncError(error instanceof Error ? error.message : "Upload gagal dijadwalkan ulang.");
+          }
+        } else if (jobs?.upload?.status === "RETRYING") {
           setSyncStatus("RETRYING");
-          setSyncError("Device agent sedang mencoba mengirim ulang file.");
+          setSyncError(jobs.upload.lastError ?? "Device agent sedang mencoba mengirim ulang file.");
+        } else if (jobs?.upload?.status === "FAILED") {
+          setSyncStatus("RETRYING");
+          setSyncError(jobs.upload.lastError ?? "Upload berhenti dan memerlukan pemeriksaan konfigurasi.");
         }
       }
 
@@ -914,7 +1080,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [booth.id, galleryUrl, jobMode, runBrowserSync, sessionId, step]);
+  }, [booth.code, booth.id, galleryUrl, jobMode, runBrowserSync, sessionId, step]);
 
   useEffect(() => {
     if (!galleryUrl) return;
@@ -1185,7 +1351,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       dnpTwoInchCut: frame.dnpTwoInchCut,
       boothId: booth.id,
       boothCode: booth.code,
-      forceBrowserFallback: forceBrowserFallbackRef.current,
+      forceBrowserFallback,
     });
     setJobMode(result.mode);
     setJobIds({ printJobId: result.printJobId, uploadJobId: result.uploadJobId });
@@ -1199,7 +1365,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     await wait(2700);
     advance("PRINT_COMPLETE");
     setPaymentBusy(false);
-  }, [advance, booth.code, booth.id, composite, copies, frame.dnpTwoInchCut, frame.id, layout.id, photos, registerFinalSelection, sessionId]);
+  }, [advance, booth.code, booth.id, composite, copies, forceBrowserFallback, frame.dnpTwoInchCut, frame.id, layout.id, photos, registerFinalSelection, sessionId]);
 
   const startPaidSession = useCallback(() => {
     if (sessionStartedRef.current) return;
@@ -1348,6 +1514,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
 
   const reset = useCallback(async () => {
     sessionPersistenceEnabledRef.current = false;
+    latestSessionRecordRef.current = null;
+    clearKioskRecoveryShadow(booth.id);
     await clearOfflineKioskSession(booth.id).catch(() => undefined);
     photos.forEach((photo) => URL.revokeObjectURL(photo.url));
     if (composite?.dataUrl.startsWith("blob:")) URL.revokeObjectURL(composite.dataUrl);
@@ -1385,7 +1553,7 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     setEditorSettings(defaultEditorSettings);
     setPhotoSettingsMap({});
     setJobMode(null);
-    forceBrowserFallbackRef.current = false;
+    setForceBrowserFallback(false);
     setStep("IDLE");
   }, [booth.id, composite, photos]);
 
@@ -1403,9 +1571,11 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
       if (!response.ok || !payload.sessionId) throw new Error(payload.error ?? "Kode reset tidak dapat digunakan.");
 
       const localAgentReset = await clearLocalSessionProgress(payload.sessionId);
+      latestSessionRecordRef.current = null;
+      clearKioskRecoveryShadow(booth.id);
       await clearOfflineKioskSession(booth.id).catch(() => undefined);
       sessionPersistenceEnabledRef.current = true;
-      forceBrowserFallbackRef.current = !localAgentReset;
+      setForceBrowserFallback(!localAgentReset);
       photos.forEach((photo) => URL.revokeObjectURL(photo.url));
       setPhotos([]);
       setComposite(null);
@@ -1476,52 +1646,77 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
     setSessionExpired(false);
   };
 
+  const sessionSnapshot = useMemo<PersistedKioskSession>(() => ({
+    version: 2,
+    step,
+    layout,
+    frame,
+    photos: photos.map((photo, slotIndex) => ({
+      id: photo.id,
+      slotIndex,
+      storage: photo.storage,
+      revision: photo.revision,
+      edited: photo.edited,
+    })),
+    photoSettingsMap,
+    selectedPhotoIndex,
+    editingIndex,
+    editorSettings,
+    retakeIndex,
+    retakesUsed,
+    copies,
+    compositeBlob: composite?.blob ?? null,
+    jobMode,
+    jobIds,
+    galleryUrl,
+    syncStatus,
+    syncError,
+    paymentQrDataUrl,
+    paymentStatus,
+    paymentBypassRequired,
+    paymentExpiresAt,
+    sessionDeadline,
+    sessionExpired,
+    forceBrowserFallback,
+    bypassDialogOpen,
+    resetDialogOpen,
+  }), [bypassDialogOpen, composite, copies, editingIndex, editorSettings, forceBrowserFallback, frame, galleryUrl, jobIds, jobMode, layout, paymentBypassRequired, paymentExpiresAt, paymentQrDataUrl, paymentStatus, photoSettingsMap, photos, resetDialogOpen, retakeIndex, retakesUsed, selectedPhotoIndex, sessionDeadline, sessionExpired, step, syncError, syncStatus]);
+
   useEffect(() => {
     if (resumeStatus !== "ready" || !sessionPersistenceEnabledRef.current || step === "IDLE") return;
+    const record: OfflineKioskSession<PersistedKioskSession> = {
+      boothId: booth.id,
+      sessionId,
+      savedAt: new Date().toISOString(),
+      state: sessionSnapshot,
+    };
+    latestSessionRecordRef.current = record;
+    writeKioskRecoveryShadow(record);
     const timer = window.setTimeout(() => {
       if (!sessionPersistenceEnabledRef.current) return;
-      const savedAt = new Date().toISOString();
-      void saveOfflineKioskSession<PersistedKioskSession>({
-        boothId: booth.id,
-        sessionId,
-        savedAt,
-        state: {
-          version: 1,
-          step,
-          layout,
-          frame,
-          photos: photos.map((photo, slotIndex) => ({
-            id: photo.id,
-            slotIndex,
-            storage: photo.storage,
-            revision: photo.revision,
-            edited: photo.edited,
-          })),
-          photoSettingsMap,
-          selectedPhotoIndex,
-          editingIndex,
-          editorSettings,
-          retakeIndex,
-          retakesUsed,
-          copies,
-          compositeBlob: composite?.blob ?? null,
-          jobMode,
-          jobIds,
-          galleryUrl,
-          syncStatus,
-          syncError,
-          paymentQrDataUrl,
-          paymentStatus,
-          paymentBypassRequired,
-          paymentExpiresAt,
-          sessionDeadline,
-          sessionExpired,
-          forceBrowserFallback: forceBrowserFallbackRef.current,
-        },
-      }).catch(() => undefined);
-    }, 80);
+      void saveOfflineKioskSession(record).catch(() => undefined);
+    }, 50);
     return () => window.clearTimeout(timer);
-  }, [booth.id, composite, copies, editingIndex, editorSettings, frame, galleryUrl, jobIds, jobMode, layout, paymentBypassRequired, paymentExpiresAt, paymentQrDataUrl, paymentStatus, photoSettingsMap, photos, resumeStatus, retakeIndex, retakesUsed, selectedPhotoIndex, sessionDeadline, sessionExpired, sessionId, step, syncError, syncStatus]);
+  }, [booth.id, resumeStatus, sessionId, sessionSnapshot, step]);
+
+  useEffect(() => {
+    const flushRecovery = () => {
+      if (!sessionPersistenceEnabledRef.current || !latestSessionRecordRef.current) return;
+      const record = { ...latestSessionRecordRef.current, savedAt: new Date().toISOString() };
+      latestSessionRecordRef.current = record;
+      writeKioskRecoveryShadow(record);
+      void saveOfflineKioskSession(record).catch(() => undefined);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushRecovery();
+    };
+    window.addEventListener("pagehide", flushRecovery);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushRecovery);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   if (resumeStatus === "loading") {
     return <div className="kiosk kiosk-resume-loading" role="status"><LoaderCircle className="is-spinning" size={38} /><strong>Memulihkan sesi photobooth...</strong><span>Foto dan langkah terakhir sedang dibuka dari penyimpanan lokal.</span></div>;
@@ -1535,6 +1730,8 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
   const retakesRemaining = Math.max(0, maxRetakes - retakesUsed);
   const paperOut = hardwareReport?.paper?.level === "EMPTY";
   const paperLow = hardwareReport?.paper?.level === "LOW";
+  const activeAgentPreviewState = agentCamera && agentPreviewState?.deviceId === agentCamera.id ? agentPreviewState : null;
+  const agentPreviewReady = activeAgentPreviewState?.status === "ready";
 
   return (
     <div className="kiosk">
@@ -1659,7 +1856,10 @@ export function KioskExperience({ booth }: { booth: KioskBooth }) {
                 <span className={retakesRemaining === 0 ? "empty" : ""}><RefreshCw size={13} /> Retake {retakesRemaining}/{maxRetakes}</span>
               </div>
               <video className="camera-video" ref={videoRef} playsInline muted />
-              {!cameraReady && <div className="camera-placeholder"><div><Camera size={44} /><strong>{agentCamera ? `${agentCamera.name} siap` : cameraError ?? "Mendeteksi kamera..."}</strong><p>{agentCamera ? "Capture memakai SDK camera melalui local agent. Preview browser tidak tersedia untuk perangkat ini." : "Kamera laptop, tablet, atau handphone akan dipilih otomatis. Mode demo hanya digunakan jika tidak ada kamera."}</p></div></div>}
+              {agentCamera && <img ref={agentPreviewImageRef} className={`camera-video camera-agent-preview ${agentPreviewReady ? "is-ready" : ""}`} alt={`Live preview ${agentCamera.name}`} />}
+              {agentCamera && !agentPreviewReady && <div className="camera-placeholder" role="status"><div>{activeAgentPreviewState?.status === "error" ? <TriangleAlert size={44} /> : <LoaderCircle className="is-spinning" size={44} />}<strong>{activeAgentPreviewState?.status === "error" ? "Preview sedang menghubungkan ulang" : `Menyiapkan preview ${agentCamera.name}`}</strong><p>{activeAgentPreviewState?.error ?? "Live view diambil langsung dari Canon melalui camera bridge."}</p></div></div>}
+              {!agentCamera && !cameraReady && <div className="camera-placeholder"><div><Camera size={44} /><strong>{cameraError ?? "Mendeteksi kamera..."}</strong><p>Kamera laptop, tablet, atau handphone akan dipilih otomatis. Mode demo hanya digunakan jika tidak ada kamera.</p></div></div>}
+              {agentPreviewReady && <span className="camera-preview-live"><i /> LIVE · CAMERA BRIDGE</span>}
               {countdown !== null && <div className="countdown">{countdown}</div>}
               <div className="capture-controls"><button className="shutter-button" onClick={runCountdown} disabled={captureBusy} aria-label={retakeIndex === null ? `Ambil pose ${photos.length + 1}` : `Ulang pose ${retakeIndex + 1}`}><Aperture size={37} strokeWidth={3} /></button><span>{captureBusy ? "Bersiap..." : retakeIndex === null ? "Tekan untuk ambil foto" : "Tekan untuk mengganti pose"}</span></div>
             </div>

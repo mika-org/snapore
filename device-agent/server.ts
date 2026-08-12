@@ -8,6 +8,7 @@ import { SdkBridgeCameraAdapter } from "./camera-adapters";
 import { rankSdkCameras } from "./camera-selection";
 import type { CameraAdapter, DiscoveredDevice, PrinterAdapter } from "./contracts";
 import { Gphoto2CameraAdapter, type Gphoto2Mode } from "./gphoto2-camera-adapter";
+import { isPermanentUploadFailure } from "./upload-policy";
 
 const port = Number(process.env.SNAPORE_AGENT_PORT ?? 4545);
 const dataRoot = resolve(process.env.SNAPORE_DATA_DIR ?? "./snapore-data");
@@ -15,7 +16,8 @@ const statePath = join(dataRoot, "agent-state.json");
 const serverUrl = process.env.SNAPORE_SERVER_URL ?? "http://localhost:3000";
 const deviceToken = process.env.SNAPORE_DEVICE_TOKEN ?? "";
 const requireToken = process.env.SNAPORE_REQUIRE_AGENT_TOKEN === "true";
-const boothCode = process.env.SNAPORE_BOOTH_CODE ?? "BKK-001";
+const configuredBoothCode = process.env.SNAPORE_BOOTH_CODE?.trim() || null;
+const boothCode = configuredBoothCode ?? "BKK-001";
 const preferredCameraModel = process.env.SNAPORE_CAMERA_PREFERRED_MODEL?.trim() || "EOS R100";
 const cameraAutoSwitch = process.env.SNAPORE_CAMERA_AUTO_SWITCH !== "false";
 const cameraPtpSetting = process.env.SNAPORE_CAMERA_PTP_MODE?.trim().toLowerCase() || (process.platform === "win32" ? "wsl" : "native");
@@ -57,7 +59,9 @@ type PrintJobRecord = {
 type UploadJobRecord = {
   id: string;
   sessionId: string;
-  status: "QUEUED" | "UPLOADING" | "SYNCED" | "RETRYING";
+  boothId?: string;
+  boothCode?: string;
+  status: "QUEUED" | "UPLOADING" | "SYNCED" | "RETRYING" | "FAILED";
   attempts: number;
   nextRetryAt?: string;
   galleryUrl?: string;
@@ -392,7 +396,8 @@ async function processUploadQueue() {
 
     const form = new FormData();
     form.set("sessionId", job.sessionId);
-    form.set("boothCode", boothCode);
+    form.set("boothId", job.boothId ?? "");
+    form.set("boothCode", job.boothCode ?? boothCode);
     form.set("uploadJobId", job.id);
     form.set("manifest", JSON.stringify({ captures, printJob }));
     for (const capture of captures) {
@@ -406,11 +411,13 @@ async function processUploadQueue() {
       method: "POST",
       headers: deviceToken ? { "x-snapore-device-token": deviceToken } : undefined,
       body: form,
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(120_000),
     });
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: string; detail?: string } | null;
-      throw new Error(failure?.detail ?? failure?.error ?? `Server sync merespons ${response.status}`);
+      const message = failure?.detail ?? failure?.error ?? `Server sync merespons ${response.status}`;
+      if (isPermanentUploadFailure(response.status, message)) throw new Error(`PERMANENT_UPLOAD_ERROR:${message}`);
+      throw new Error(message);
     }
     const result = await response.json() as { galleryUrl?: string };
     job.status = "SYNCED";
@@ -418,10 +425,16 @@ async function processUploadQueue() {
     job.lastError = undefined;
     job.nextRetryAt = undefined;
   } catch (error) {
-    job.status = "RETRYING";
-    job.lastError = error instanceof Error ? error.message : "Unknown upload error";
-    const delaySeconds = Math.min(300, 2 ** Math.min(job.attempts, 8)) + Math.random() * 3;
-    job.nextRetryAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+    const message = error instanceof Error ? error.message : "Unknown upload error";
+    const permanent = message.startsWith("PERMANENT_UPLOAD_ERROR:");
+    job.status = permanent ? "FAILED" : "RETRYING";
+    job.lastError = permanent ? message.slice("PERMANENT_UPLOAD_ERROR:".length) : message;
+    if (permanent) {
+      job.nextRetryAt = undefined;
+    } else {
+      const delaySeconds = Math.min(300, 2 ** Math.min(job.attempts, 8)) + Math.random() * 3;
+      job.nextRetryAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+    }
   }
   job.updatedAt = new Date().toISOString();
   await saveState(state);
@@ -442,7 +455,7 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       const disk = await statfs(dataRoot).catch(() => null);
-      const discovered = await printer.discover();
+      const discovered = await printer.discover().catch(() => []);
       const cameraConnection = cameraOperationBusy
         ? { discovered: lastDiscoveredSdkCameras, selected: activeSdkCamera ?? undefined, error: lastCameraDiscoveryError }
         : await withCameraOperation(() => ensureSdkCameraConnected());
@@ -557,6 +570,27 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && req.url === "/camera/preview") {
+      const input = await readJson<{ deviceId?: string }>(req);
+      const result = await withCameraOperation(async () => {
+        const connection = await ensureSdkCameraConnected(input.deviceId);
+        if (!connection.selected) return null;
+        if (!connection.selected.adapter.preview) throw new Error("Camera bridge ini belum mendukung preview");
+        return { selected: connection.selected, preview: await connection.selected.adapter.preview() };
+      });
+      if (!result) {
+        json(res, 404, { error: "Kamera PTP/tethered tidak ditemukan" });
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("content-type", result.preview.mimeType);
+      res.setHeader("cache-control", "no-store, max-age=0");
+      res.setHeader("x-snapore-camera-id", result.selected.device.id);
+      res.setHeader("x-snapore-camera-name", encodeURIComponent(result.selected.device.name));
+      res.end(result.preview.bytes);
+      return;
+    }
+
     if (req.method === "GET" && req.url === "/jobs") {
       const state = await loadState();
       json(res, 200, { printJobs: state.printJobs.slice(-20), uploadJobs: state.uploadJobs.slice(-20) });
@@ -615,6 +649,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/jobs/print") {
       const input = await readJson<{
         sessionId: string;
+        boothId?: string;
+        boothCode?: string;
         compositeDataUrl: string;
         copies: number;
         layoutId: string;
@@ -626,6 +662,8 @@ const server = createServer(async (req, res) => {
       const sessionId = safeSegment(input.sessionId);
       const printJobId = safeSegment(input.printJobId);
       const uploadJobId = safeSegment(input.uploadJobId);
+      const jobBoothId = input.boothId ? safeSegment(input.boothId) : undefined;
+      const jobBoothCode = configuredBoothCode ?? (input.boothCode ? safeSegment(input.boothCode) : boothCode);
       const image = parseDataUrl(input.compositeDataUrl);
       const destination = join(sessionDirectory(sessionId), "composites", `print-${printJobId}${extensionFor(image.mimeType)}`);
       await atomicWrite(destination, image.bytes);
@@ -657,12 +695,17 @@ const server = createServer(async (req, res) => {
         uploadJob = {
           id: uploadJobId,
           sessionId,
+          boothId: jobBoothId,
+          boothCode: jobBoothCode,
           status: "QUEUED",
           attempts: 0,
           createdAt: now,
           updatedAt: now,
         };
         state.uploadJobs.push(uploadJob);
+      } else {
+        uploadJob.boothId = jobBoothId ?? uploadJob.boothId;
+        uploadJob.boothCode = jobBoothCode;
       }
       await atomicWrite(
         join(sessionDirectory(sessionId), "manifest.json"),
@@ -674,6 +717,34 @@ const server = createServer(async (req, res) => {
         await processUploadQueue();
       })();
       json(res, 202, { printJobId, uploadJobId, localPath: destination, printStatus: printJob.status, uploadStatus: uploadJob.status });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/jobs/upload/retry") {
+      const input = await readJson<{ uploadJobId?: string; boothId?: string; boothCode?: string }>(req);
+      const uploadJobId = safeSegment(String(input.uploadJobId ?? ""));
+      const jobBoothId = safeSegment(String(input.boothId ?? ""));
+      const jobBoothCode = safeSegment(String(input.boothCode ?? ""));
+      const state = await loadState();
+      const uploadJob = state.uploadJobs.find((job) => job.id === uploadJobId);
+      if (!uploadJob) {
+        json(res, 404, { error: "Upload job tidak ditemukan" });
+        return;
+      }
+      if (uploadJob.status === "SYNCED") {
+        json(res, 200, { ok: true, uploadJob });
+        return;
+      }
+      uploadJob.boothId = jobBoothId;
+      uploadJob.boothCode = configuredBoothCode ?? jobBoothCode;
+      uploadJob.status = "QUEUED";
+      uploadJob.attempts = 0;
+      uploadJob.nextRetryAt = undefined;
+      uploadJob.lastError = undefined;
+      uploadJob.updatedAt = new Date().toISOString();
+      await saveState(state);
+      void processUploadQueue();
+      json(res, 202, { ok: true, uploadJob });
       return;
     }
 

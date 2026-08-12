@@ -76,12 +76,13 @@ npm run desktop:dist
 
 Hasil build tersedia di `release/`. Installer tidak menyertakan `.env`, password, atau upload development. Saat pertama dibuka, Snapore membuat `snapore.env` dan `desktop.config.json` di `%APPDATA%\Snapore Desktop`; isi `DATABASE_URL` di sana, kemudian buka ulang aplikasi. Detail seluruh command, pengaturan kiosk/fullscreen, direktori data, dan distribusi tersedia di [docs/desktop-build.md](docs/desktop-build.md).
 
-### Auto-detect kamera dan SDK bridge
+### Auto-detect kamera dan camera bridge
 
 - Kamera browser pada laptop, tablet, dan handphone dideteksi ulang saat perangkat dipasang/dilepas. Desktop memprioritaskan DSLR webcam utility atau webcam USB; perangkat mobile memprioritaskan kamera depan.
-- Canon EDSDK dijalankan melalui executable bridge lokal pada `SNAPORE_CANON_SDK_BRIDGE`. SDK vendor lain memakai `SNAPORE_CAMERA_SDK_BRIDGE` dan nama adapter pada `SNAPORE_CAMERA_SDK_KIND`.
-- Bridge menerima perintah `discover --json`, `connect --device <id>`, `disconnect --device <id>`, `capabilities --device <id> --json`, dan `capture --device <id> --output <file.jpg>`.
-- Jika bridge SDK gagal atau kamera dilepas, kiosk otomatis jatuh kembali ke MediaDevices browser. Binary dan lisensi SDK resmi vendor tetap harus dipasang pada komputer booth.
+- Canon EOS R100 memakai PTP melalui gPhoto2 di WSL. Konfigurasi dan setup `usbipd` dijelaskan di [HOW-TO.md](HOW-TO.md).
+- Pada langkah capture, camera bridge membuka stream JPEG persisten dan kiosk membaca frame terbaru tanpa me-render ulang seluruh flow. Stream dihentikan sebelum shutter agar unduhan foto resolusi penuh tidak tertahan.
+- Kamera SDK vendor lain dapat memakai executable pada `SNAPORE_CAMERA_SDK_BRIDGE` dengan nama adapter dari `SNAPORE_CAMERA_SDK_KIND`. Executable menerima perintah `discover --json`, `connect --device <id>`, `disconnect --device <id>`, `capabilities --device <id> --json`, dan `capture --device <id> --output <file.jpg>`.
+- Jika camera bridge gagal atau kamera dilepas, kiosk otomatis jatuh kembali ke MediaDevices browser.
 
 ### Auto-connect DNP dan Epson
 
@@ -306,6 +307,7 @@ flowchart TD
 - Sebelum membuat job, server memvalidasi ulang bahwa pembayaran sesi masih `PAID` dan layout-frame masih valid.
 - Konfirmasi print membuat print job serta upload job terpisah dan idempotent.
 - Print selalu membaca composite lokal. Upload yang gagal tidak membatalkan print yang sah dan masuk retry queue.
+- Asset yang diterima server disimpan sebagai JPEG progresif dengan batas dimensi dan kualitas terpisah untuk foto raw serta composite. File print lokal tetap resolusi penuh; profil default server mengutamakan kapasitas storage 50 GB.
 - QR galeri baru ditampilkan setelah server berhasil menerima asset; selama belum berhasil UI menampilkan status sinkronisasi/menunggu.
 
 #### G. DONE dan reset

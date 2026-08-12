@@ -66,13 +66,17 @@ SNAPORE_BOOTH_CODE="BKK-001"
 SNAPORE_PRINTER_MODE="os-spooler"
 ```
 
-Untuk bridge vendor, gunakan path absolut yang tersedia pada PC kiosk:
+Canon EOS R100 memakai gPhoto2/PTP melalui WSL. Untuk bridge SDK printer atau kamera vendor lain, gunakan path absolut yang tersedia pada PC kiosk:
 
 ```dotenv
 SNAPORE_DNP_SDK_BRIDGE="C:\\SnaporeBridges\\dnp-bridge.exe"
 SNAPORE_EPSON_SDK_BRIDGE="C:\\SnaporeBridges\\epson-bridge.exe"
-SNAPORE_CANON_SDK_BRIDGE="C:\\SnaporeBridges\\canon-edsdk-bridge.exe"
+SNAPORE_CAMERA_SDK_BRIDGE="C:\\SnaporeBridges\\camera-vendor-bridge.exe"
+SNAPORE_CAMERA_SDK_KIND="VENDOR_SDK"
+SNAPORE_CAMERA_PREVIEW_TIMEOUT_MS="15000"
 ```
+
+Lihat [HOW-TO.md](../HOW-TO.md) untuk pemasangan WSL, gPhoto2, `usbipd`, dan konfigurasi Canon EOS R100.
 
 Perubahan `snapore.env` diterapkan setelah aplikasi dimulai ulang.
 Untuk deployment/CI, path file environment dapat dioverride sementara melalui environment variable `SNAPORE_ENV_FILE` tanpa menyalin rahasianya ke installer. Direktori profil juga dapat diisolasi melalui `SNAPORE_USER_DATA_DIR`.
@@ -126,5 +130,6 @@ npm run db:deploy
 - Jika port 3765 dipakai, ubah `webPort` lalu restart.
 - Port agent 4545 sengaja tetap agar URL agent yang dibundel di frontend konsisten.
 - Jika kamera tidak tampil, periksa izin Camera untuk Snapore/Desktop apps di Windows Settings.
+- Untuk Canon EOS R100, pastikan `usbipd list` menunjukkan kamera `Attached` dan `wsl --exec gphoto2 --auto-detect` menampilkan kamera PTP.
 - Jika printer tidak terdeteksi, pastikan queue printer fisik terlihat di Windows dan drivernya tidak offline.
 - DNP 2-inch cut tetap memerlukan bridge SDK vendor atau queue Windows khusus yang driver-nya sudah mengaktifkan mode potong tersebut.

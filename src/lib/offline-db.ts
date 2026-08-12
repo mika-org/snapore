@@ -72,6 +72,18 @@ export async function saveOfflineJob(job: OfflineJob) {
   return put("jobs", job);
 }
 
+export async function getSessionJobs(sessionId: string): Promise<OfflineJob[]> {
+  const db = await openDatabase();
+  const jobs = await new Promise<OfflineJob[]>((resolve, reject) => {
+    const transaction = db.transaction("jobs", "readonly");
+    const request = transaction.objectStore("jobs").index("sessionId").getAll(sessionId);
+    request.onsuccess = () => resolve(request.result as OfflineJob[]);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return jobs;
+}
+
 export async function saveOfflineKioskSession<T>(session: OfflineKioskSession<T>) {
   return put("sessions", session);
 }

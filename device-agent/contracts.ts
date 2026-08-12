@@ -20,6 +20,7 @@ export interface CameraAdapter {
   connect(deviceId: string): Promise<void>;
   disconnect(): Promise<void>;
   getCapabilities(): Promise<Record<string, unknown>>;
+  preview?(): Promise<{ bytes: Buffer; mimeType: string }>;
   capture(options?: Record<string, unknown>): Promise<{ bytes: Buffer; mimeType: string }>;
   getHealth(): Promise<DeviceHealth>;
 }

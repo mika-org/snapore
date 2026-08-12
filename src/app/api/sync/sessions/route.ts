@@ -2,12 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { NextResponse } from "next/server";
-import sharp from "sharp";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { remainingPaperAfterPrint } from "@/domain/paper-counter";
 import { publicAppUrl, publicUploadUrl } from "@/domain/upload-destination";
+import { optimizeServerImage } from "@/lib/server-image-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
   try {
     const form = await request.formData();
     const sessionId = safeSegment(String(form.get("sessionId") ?? ""));
-    const boothCode = safeSegment(String(form.get("boothCode") ?? ""));
+    const submittedBoothCode = safeSegment(String(form.get("boothCode") ?? ""));
     const kioskBoothId = String(form.get("boothId") ?? "");
     const uploadJobId = safeSegment(String(form.get("uploadJobId") ?? ""));
     const manifestRaw = String(form.get("manifest") ?? "{}");
@@ -86,16 +86,18 @@ export async function POST(request: Request) {
     const files = form.getAll("assets").filter((entry): entry is File => entry instanceof File);
     if (files.length === 0) throw new Error("Tidak ada asset untuk disinkronkan");
 
-    const booth = await prisma.booth.findUnique({
-      where: { code: boothCode },
-      include: { tenant: { select: { status: true } } },
-    });
-    if (!booth) throw new Error("Booth agent belum terdaftar pada tenant.");
-
     const validDeviceToken = expectedToken
       ? request.headers.get("x-snapore-device-token") === expectedToken
       : !kioskBoothId;
-    const validKioskLink = z.uuid().safeParse(kioskBoothId).success
+    const validKioskBoothId = z.uuid().safeParse(kioskBoothId).success;
+    const booth = await prisma.booth.findUnique({
+      where: validDeviceToken || !validKioskBoothId ? { code: submittedBoothCode } : { id: kioskBoothId },
+      include: { tenant: { select: { status: true } } },
+    });
+    if (!booth) throw new Error("Booth agent belum terdaftar pada tenant.");
+    const boothCode = booth.code;
+
+    const validKioskLink = validKioskBoothId
       && z.uuid().safeParse(sessionId).success
       && kioskBoothId === booth.id
       && booth.kioskEnabled
@@ -109,34 +111,42 @@ export async function POST(request: Request) {
     const manifestCaptures = Array.isArray(manifest.captures)
       ? manifest.captures.filter((capture): capture is { id?: string; slotIndex?: number; revision?: number } => Boolean(capture) && typeof capture === "object")
       : [];
-    const assetRecords: Array<{ fileName: string; kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; byteSize: number; checksum: string; objectKey: string; publicUrl: string | null; localPath: string; width: number; height: number; slotIndex: number | null; revision: number | null }> = [];
+    const assetRecords: Array<{ fileName: string; kind: "ORIGINAL" | "COMPOSITE"; mimeType: string; sourceByteSize: number; byteSize: number; checksum: string; objectKey: string; publicUrl: string | null; localPath: string; width: number; height: number; slotIndex: number | null; revision: number | null }> = [];
 
     for (const file of files) {
       const fileName = safeSegment(file.name.replace(/\.[^.]+$/, ""));
-      const extension = file.type === "image/png" ? ".png" : file.type === "image/webp" ? ".webp" : ".jpg";
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (bytes.length === 0 || bytes.length > 30 * 1024 * 1024) throw new Error("Ukuran asset tidak valid");
-      const destination = join(/* turbopackIgnore: true */ directory, `${fileName}${extension}`);
-      await atomicWrite(destination, bytes);
-      const imageMetadata = await sharp(bytes).metadata().catch(() => null);
+      const kind = fileName.startsWith("composite-") ? "COMPOSITE" as const : "ORIGINAL" as const;
+      const sourceBytes = new Uint8Array(await file.arrayBuffer());
+      if (sourceBytes.length === 0 || sourceBytes.length > 30 * 1024 * 1024) throw new Error("Ukuran asset tidak valid");
+      const optimized = await optimizeServerImage(sourceBytes, kind);
+      const destination = join(/* turbopackIgnore: true */ directory, `${fileName}${optimized.extension}`);
+      await atomicWrite(destination, optimized.bytes);
       const captureMetadata = manifestCaptures.find((capture) => capture.id === fileName);
       const originalIndex = assetRecords.filter((asset) => asset.kind === "ORIGINAL").length;
-      const objectKey = `${boothCode}/${sessionId}/${fileName}${extension}`;
+      const objectKey = `${boothCode}/${sessionId}/${fileName}${optimized.extension}`;
       assetRecords.push({
         fileName,
-        kind: fileName.startsWith("composite-") ? "COMPOSITE" : "ORIGINAL",
-        mimeType: file.type || "image/jpeg",
-        byteSize: bytes.length,
-        checksum: hash(bytes),
+        kind,
+        mimeType: optimized.mimeType,
+        sourceByteSize: optimized.sourceByteSize,
+        byteSize: optimized.byteSize,
+        checksum: hash(optimized.bytes),
         objectKey,
         publicUrl: publicUploadUrl(process.env.SNAPORE_PUBLIC_UPLOAD_BASE_URL, objectKey),
         localPath: destination,
-        width: imageMetadata?.width ?? 0,
-        height: imageMetadata?.height ?? 0,
-        slotIndex: fileName.startsWith("composite-") ? null : captureMetadata?.slotIndex ?? originalIndex,
-        revision: fileName.startsWith("composite-") ? null : captureMetadata?.revision ?? 1,
+        width: optimized.width,
+        height: optimized.height,
+        slotIndex: kind === "COMPOSITE" ? null : captureMetadata?.slotIndex ?? originalIndex,
+        revision: kind === "COMPOSITE" ? null : captureMetadata?.revision ?? 1,
       });
     }
+
+    const storageSummary = {
+      profile: "bounded-jpeg-v1",
+      sourceBytes: assetRecords.reduce((total, asset) => total + asset.sourceByteSize, 0),
+      storedBytes: assetRecords.reduce((total, asset) => total + asset.byteSize, 0),
+    };
+    const storedManifest = { ...manifest, serverStorage: storageSummary };
 
     if (validDeviceToken) {
       await prisma.booth.update({ where: { id: booth.id }, data: { lastHeartbeatAt: new Date(), status: "ONLINE" } });
@@ -144,14 +154,14 @@ export async function POST(request: Request) {
 
     const session = await prisma.photoSession.upsert({
       where: { id: sessionId },
-      update: { status: "COMPLETED", completedAt: new Date(), metadata: manifest as Prisma.InputJsonValue },
+      update: { status: "COMPLETED", completedAt: new Date(), metadata: storedManifest as Prisma.InputJsonValue },
       create: {
         id: sessionId,
         publicCode: sessionId.slice(0, 8).toUpperCase(),
         boothId: booth.id,
         status: "COMPLETED",
         completedAt: new Date(),
-        metadata: manifest as Prisma.InputJsonValue,
+        metadata: storedManifest as Prisma.InputJsonValue,
       },
     });
 
@@ -165,7 +175,7 @@ export async function POST(request: Request) {
             width: asset.width,
             height: asset.height,
             localPath: asset.localPath,
-            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl },
+            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl, sourceByteSize: asset.sourceByteSize, storedByteSize: asset.byteSize, optimized: true },
           },
           create: {
             id: z.uuid().safeParse(asset.fileName).success ? asset.fileName : randomUUID(),
@@ -177,13 +187,13 @@ export async function POST(request: Request) {
             checksum: asset.checksum,
             localPath: asset.localPath,
             source: "MEDIA_DEVICE",
-            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl },
+            metadata: { revision: asset.revision, objectKey: asset.objectKey, publicUrl: asset.publicUrl, sourceByteSize: asset.sourceByteSize, storedByteSize: asset.byteSize, optimized: true },
           },
         })
         : null;
       await prisma.asset.upsert({
         where: { sessionId_checksum_kind: { sessionId, checksum: asset.checksum, kind: asset.kind } },
-        update: { objectKey: asset.objectKey, localPath: asset.localPath, capturedPhotoId: capturedPhoto?.id, syncedAt: new Date() },
+        update: { mimeType: asset.mimeType, byteSize: asset.byteSize, objectKey: asset.objectKey, localPath: asset.localPath, capturedPhotoId: capturedPhoto?.id, syncedAt: new Date() },
         create: {
           sessionId,
           capturedPhotoId: capturedPhoto?.id,
@@ -202,7 +212,7 @@ export async function POST(request: Request) {
     const order = await prisma.order.findUnique({ where: { sessionId } });
     if (composite && order && session.layoutVersionId) {
       const composition = await prisma.composition.findFirst({ where: { sessionId, checksum: composite.checksum } })
-        ?? await prisma.composition.create({ data: { sessionId, layoutVersionId: session.layoutVersionId, frameVersionId: session.frameVersionId, width: 1200, height: 1800, checksum: composite.checksum, localPath: composite.localPath } });
+        ?? await prisma.composition.create({ data: { sessionId, layoutVersionId: session.layoutVersionId, frameVersionId: session.frameVersionId, width: composite.width, height: composite.height, checksum: composite.checksum, localPath: composite.localPath } });
       const manifestPrintJob = manifest.printJob as { id?: string; copies?: number; status?: string } | undefined;
       if (manifestPrintJob?.id) {
         const device = await prisma.device.findFirst({ where: { boothId: booth.id, type: "PRINTER", preferred: true }, orderBy: { createdAt: "asc" } });
@@ -243,7 +253,8 @@ export async function POST(request: Request) {
       status: "SYNCED",
       galleryUrl,
       assetCount: assetRecords.length,
-      uploads: assetRecords.map((asset) => ({ kind: asset.kind, objectKey: asset.objectKey, url: asset.publicUrl })),
+      storage: { ...storageSummary, savedBytes: Math.max(0, storageSummary.sourceBytes - storageSummary.storedBytes) },
+      uploads: assetRecords.map((asset) => ({ kind: asset.kind, objectKey: asset.objectKey, url: asset.publicUrl, sourceByteSize: asset.sourceByteSize, byteSize: asset.byteSize })),
     });
   } catch (error) {
     return jsonResponse(request, { error: "Sinkronisasi gagal", detail: error instanceof Error ? error.message : undefined }, { status: 400 });

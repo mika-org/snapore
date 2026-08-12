@@ -14,6 +14,15 @@ Snapore memakai **Picture Transfer Protocol (PTP)** melalui gPhoto2. Alurnya ada
    gphoto2 --version
    ```
 
+   Jika instalasi Ubuntu gagal dengan `0x80370102` walaupun virtualisasi BIOS sudah aktif, buka PowerShell sebagai Administrator lalu jalankan:
+
+   ```powershell
+   wsl --install --no-distribution
+   bcdedit /set hypervisorlaunchtype auto
+   ```
+
+   Restart Windows, kemudian ulangi `wsl --install --distribution Ubuntu`.
+
 2. Pasang `usbipd-win` dari PowerShell:
 
    ```powershell
@@ -49,6 +58,9 @@ SNAPORE_CAMERA_USBIPD_AUTO_ATTACH="true"
 SNAPORE_CAMERA_PREFERRED_MODEL="EOS R100"
 SNAPORE_CAMERA_AUTO_SWITCH="true"
 SNAPORE_CAMERA_CAPTURE_TIMEOUT_MS="45000"
+SNAPORE_CAMERA_PREVIEW_TIMEOUT_MS="15000"
+SNAPORE_CAMERA_PREVIEW_STREAM="true"
+SNAPORE_CAMERA_PREVIEW_IDLE_MS="1500"
 ```
 
 Jika ada lebih dari satu distro, isi `SNAPORE_GPHOTO2_WSL_DISTRO`, misalnya `Ubuntu-24.04`. Untuk Linux native atau build gPhoto2 Windows yang kompatibel, gunakan `SNAPORE_CAMERA_PTP_MODE="native"` dan arahkan `SNAPORE_GPHOTO2_PATH` ke executable.
@@ -60,6 +72,7 @@ Perilaku otomatis:
 - Device agent mendeteksi model dan port R100 setiap lima detik.
 - Jika R100 berstatus `Shared`, device agent otomatis menjalankan `usbipd attach --wsl`; `bind` Administrator hanya perlu dilakukan sekali.
 - R100 yang tersambung dipilih otomatis, shutter dipicu, lalu foto langsung diunduh dalam panggilan yang sama.
+- Saat masuk ke langkah pengambilan foto, device agent membuka satu stream movie JPEG dan hanya mengirim frame terbaru ke kiosk. Stream berhenti otomatis setelah idle atau sebelum shutter, sehingga preview lancar tanpa menahan capture resolusi penuh.
 - Jika R100 dilepas atau capture gagal, kiosk beralih ke kamera bawaan laptop.
 - Saat R100 kembali, device agent mengaktifkannya lagi tanpa restart aplikasi.
 
@@ -83,8 +96,12 @@ Konfigurasi yang digunakan:
 | `SNAPORE_PUBLIC_UPLOAD_BASE_URL` | Base URL publik file hasil upload. |
 | `SNAPORE_PUBLIC_APP_URL` | Domain publik untuk link galeri QR. |
 | `SNAPORE_UPLOAD_ALLOWED_ORIGINS` | Daftar origin kiosk yang boleh melakukan upload lintas domain; pisahkan dengan koma atau gunakan `*`. |
+| `SNAPORE_SERVER_ORIGINAL_MAX_EDGE` | Batas sisi terpanjang foto raw tanpa frame yang disimpan server; default `2400`. |
+| `SNAPORE_SERVER_ORIGINAL_JPEG_QUALITY` | Kualitas JPEG foto raw server; default `78`. |
+| `SNAPORE_SERVER_COMPOSITE_MAX_EDGE` | Batas sisi terpanjang hasil dengan frame pada server; default `1800`. |
+| `SNAPORE_SERVER_COMPOSITE_JPEG_QUALITY` | Kualitas JPEG hasil dengan frame pada server; default `86`. |
 
-Untuk production, pastikan proses Next.js memiliki izin tulis pada `SNAPORE_SERVER_UPLOAD_DIR`. URL `/uploads/` adalah lokasi publik file, sedangkan pengiriman file dilakukan melalui endpoint `POST /api/sync/sessions` pada domain server.
+Untuk production, pastikan proses Next.js memiliki izin tulis pada `SNAPORE_SERVER_UPLOAD_DIR`. URL `/uploads/` adalah lokasi publik file, sedangkan pengiriman file dilakukan melalui endpoint `POST /api/sync/sessions` pada domain server. API mengubah seluruh asset server menjadi JPEG progresif teroptimasi dan mencatat byte sumber versus byte tersimpan. Composite lokal yang dibaca printer tidak diubah, sehingga optimasi storage tidak menurunkan kualitas cetak.
 
 ## Melanjutkan sesi setelah refresh
 
