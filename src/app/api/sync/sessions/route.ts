@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { NextResponse } from "next/server";
@@ -6,7 +6,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { remainingPaperAfterPrint } from "@/domain/paper-counter";
-import { publicAppUrl, publicUploadUrl } from "@/domain/upload-destination";
+import { publicUploadUrl } from "@/domain/upload-destination";
+import { createGalleryLink } from "@/lib/gallery-link";
 import { optimizeServerImage } from "@/lib/server-image-storage";
 
 export const runtime = "nodejs";
@@ -19,14 +20,6 @@ function safeSegment(value: string) {
 
 function hash(input: Uint8Array | string) {
   return createHash("sha256").update(input).digest("hex");
-}
-
-async function createGalleryUrl(galleryId: string, expiresAt: Date, requestOrigin: string) {
-  const publicToken = randomBytes(24).toString("base64url");
-  await prisma.galleryToken.create({
-    data: { galleryId, tokenHash: hash(publicToken), expiresAt },
-  });
-  return publicAppUrl(process.env.SNAPORE_PUBLIC_APP_URL, `/g/${publicToken}`, requestOrigin);
 }
 
 function allowedUploadOrigin(request: Request) {
@@ -246,7 +239,7 @@ export async function POST(request: Request) {
       update: { active: true, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
       create: { sessionId, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
     });
-    const galleryUrl = await createGalleryUrl(gallery.id, gallery.expiresAt, new URL(request.url).origin);
+    const galleryUrl = await createGalleryLink(gallery.id, gallery.expiresAt, new URL(request.url).origin);
 
     return jsonResponse(request, {
       sessionId: session.id,
@@ -283,7 +276,7 @@ export async function GET(request: Request) {
   if (!session) return jsonResponse(request, { status: "WAITING_FOR_SYNC" });
 
   if (session.gallery?.active && session.gallery.expiresAt > new Date()) {
-    const galleryUrl = await createGalleryUrl(session.gallery.id, session.gallery.expiresAt, new URL(request.url).origin);
+    const galleryUrl = await createGalleryLink(session.gallery.id, session.gallery.expiresAt, new URL(request.url).origin);
     return jsonResponse(request, { status: "SYNCED", galleryUrl });
   }
 

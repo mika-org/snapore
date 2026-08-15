@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Download, Images, Search } from "lucide-react";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
+import { SessionGalleryPreview } from "@/components/session-gallery-preview";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -52,6 +53,7 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
         layoutVersion: { include: { layout: { select: { name: true } } } },
         order: { include: { payment: true, printJobs: { orderBy: { updatedAt: "desc" } } } },
         uploadJobs: { orderBy: { updatedAt: "desc" } },
+        gallery: { select: { active: true, expiresAt: true } },
         assets: {
           where: { kind: { in: ["ORIGINAL", "COMPOSITE", "PREVIEW"] } },
           orderBy: [{ kind: "desc" }, { createdAt: "asc" }],
@@ -90,7 +92,7 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="data-table">
-            <thead><tr><th>Session</th><th>Booth</th><th>Time</th><th>Layout</th><th>Copies</th><th>Payment</th><th>Upload</th><th>Status</th></tr></thead>
+            <thead><tr><th>Session</th><th>Booth</th><th>Time</th><th>Layout</th><th>Copies</th><th>Payment</th><th>Upload</th><th>Status</th><th>Gallery</th></tr></thead>
             <tbody>
               {sessions.map((session) => {
                 const latestUpload = session.uploadJobs[0];
@@ -108,9 +110,10 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
                       <td><span className="status-chip"><span className={`status-dot ${statusClass(paymentStatus)}`} />{paymentStatus}</span></td>
                       <td><span className="status-chip"><span className={`status-dot ${statusClass(latestUpload?.status ?? "WAITING")}`} />{latestUpload?.status ?? "BELUM ADA JOB"}</span></td>
                       <td><span className="status-chip"><span className={`status-dot ${statusClass(session.status)}`} />{session.status}</span></td>
+                      <td><SessionGalleryPreview sessionId={session.id} publicCode={session.publicCode} available={Boolean(session.gallery?.active && session.gallery.expiresAt > new Date())} /></td>
                     </tr>
                     <tr className="session-photo-detail-row">
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         <details className="session-photo-detail">
                           <summary><Images size={14} /> Detail foto · {originals.length} raw · {composites.length} hasil cetak</summary>
                           <div className="session-photo-groups">
@@ -123,7 +126,7 @@ export default async function SessionsPage({ searchParams }: { searchParams: Pro
                   </Fragment>
                 );
               })}
-              {sessions.length === 0 ? <tr><td colSpan={8}><div className="table-empty">{query ? "Tidak ada sesi yang cocok dengan pencarian." : "Belum ada sesi untuk tenant ini."}</div></td></tr> : null}
+              {sessions.length === 0 ? <tr><td colSpan={9}><div className="table-empty">{query ? "Tidak ada sesi yang cocok dengan pencarian." : "Belum ada sesi untuk tenant ini."}</div></td></tr> : null}
             </tbody>
           </table>
         </div>

@@ -184,7 +184,7 @@ async function getOverviewResponse(request?: Request) {
         frameVersion: { include: { frame: { select: { name: true } } } },
         order: { include: { payment: true, printJobs: { select: { id: true, status: true } } } },
         uploadJobs: { orderBy: { updatedAt: "desc" }, take: 1 },
-        gallery: { select: { id: true } },
+        gallery: { select: { id: true, active: true, expiresAt: true } },
         assets: {
           where: { kind: { in: ["ORIGINAL", "COMPOSITE", "PREVIEW"] } },
           orderBy: [{ kind: "desc" }, { createdAt: "asc" }],
@@ -324,6 +324,7 @@ async function getOverviewResponse(request?: Request) {
         sessionKind: classification.kind,
         testingReason: classification.reason,
         uploadStatus: session.uploadJobs[0]?.status ?? null,
+        galleryAvailable: Boolean(session.gallery?.active && session.gallery.expiresAt > now),
         assets: session.assets.map((asset) => ({
           id: asset.id,
           kind: asset.kind,

@@ -43,6 +43,7 @@ import {
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { FrameManager } from "@/components/frame-manager";
 import { SearchableSelect } from "@/components/searchable-select";
+import { SessionGalleryPreview } from "@/components/session-gallery-preview";
 import { formatCurrency } from "@/lib/format";
 
 type Tenant = {
@@ -106,6 +107,7 @@ type Overview = {
     sessionKind: "TESTING" | "PRODUCTION";
     testingReason: string | null;
     uploadStatus: string | null;
+    galleryAvailable: boolean;
     assets: Array<{ id: string; kind: string; mimeType: string; byteSize: number; slotIndex: number | null }>;
     resettable: boolean;
     activeReset: { code: string | null; expiresAt: string; reason: string | null } | null;
@@ -498,7 +500,7 @@ export function SuperAdminConsole({ name }: { name: string }) {
               </details>
               <footer>
                 {session.activeReset ? <div className="active-reset-code"><span>Kode aktif sampai {formatDateTime(session.activeReset.expiresAt)}</span>{session.activeReset.code ? <strong>{session.activeReset.code}</strong> : <em>Kode aktif</em>}{session.activeReset.code ? <button type="button" onClick={() => void navigator.clipboard.writeText(session.activeReset?.code ?? "")} aria-label={`Salin kode reset ${session.publicCode}`}><Copy size={13} /></button> : null}</div> : <p>{session.resettable ? "Buat kode jika pengguna perlu mengulang foto tanpa membayar kembali." : "Reset tidak tersedia setelah sesi selesai atau job cetak dibuat."}</p>}
-                <button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode 6 digit"}</button>
+                <div className="session-card-actions"><SessionGalleryPreview sessionId={session.id} publicCode={session.publicCode} available={session.galleryAvailable} /><button className="secondary-button" type="button" disabled={!session.resettable || saving === `reset-${session.id}`} onClick={() => void generateResetCode(session.id)}>{saving === `reset-${session.id}` ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />} {session.activeReset ? "Generate ulang" : "Generate kode 6 digit"}</button></div>
               </footer>
             </article>)}
             {!loading && visibleSessions.length === 0 ? <div className="tenant-workspace-empty"><Images size={25} /><strong>Belum ada sesi</strong><span>Tidak ada sesi yang cocok dengan tenant, kiosk, tipe, dan rentang waktu terpilih.</span></div> : null}
