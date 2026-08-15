@@ -14,11 +14,15 @@ describe("security helpers", () => {
     else delete process.env.APP_ENCRYPTION_KEY;
   });
 
-  it("meng-hash password dengan salt dan memverifikasinya", () => {
-    const hash = hashPassword("Snapore-test-123!");
+  it("meng-hash password hanya dengan bcrypt dan memverifikasinya", async () => {
+    const hash = await hashPassword("Snapore-test-123!");
+    expect(hash).toMatch(/^\$2b\$12\$/);
     expect(hash).not.toContain("Snapore-test-123!");
-    expect(verifyPassword("Snapore-test-123!", hash)).toBe(true);
-    expect(verifyPassword("password-salah", hash)).toBe(false);
+    await expect(verifyPassword("Snapore-test-123!", hash)).resolves.toBe(true);
+    await expect(verifyPassword("password-salah", hash)).resolves.toBe(false);
+    await expect(verifyPassword("Snapore-test-123!", "scrypt:c2FsdA==:aGFzaA==")).resolves.toBe(false);
+    await expect(hashPassword("a".repeat(73))).rejects.toThrow("Password maksimal 72 byte");
+    await expect(verifyPassword("a".repeat(73), hash)).resolves.toBe(false);
   });
 
   it("mengenkripsi API key dengan authenticated encryption", () => {

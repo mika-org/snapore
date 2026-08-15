@@ -59,16 +59,20 @@ async function main() {
   const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD ?? "Snapore@2026!";
   const adminPassword = process.env.ADMIN_PASSWORD ?? "Snapore#Admin73";
   const resetSeedPasswords = process.env.SNAPORE_RESET_SEED_PASSWORDS === "true";
+  const [superAdminPasswordHash, adminPasswordHash] = await Promise.all([
+    hashPassword(superAdminPassword),
+    hashPassword(adminPassword),
+  ]);
   const admin = await prisma.user.upsert({
     where: { email: superAdminEmail },
-    update: { name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, tenantId: null, active: true, ...(resetSeedPasswords ? { passwordHash: hashPassword(superAdminPassword) } : {}) },
-    create: { email: superAdminEmail, name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, passwordHash: hashPassword(superAdminPassword) },
+    update: { name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, tenantId: null, active: true, ...(resetSeedPasswords ? { passwordHash: superAdminPasswordHash } : {}) },
+    create: { email: superAdminEmail, name: "Snapore Super Admin", role: UserRole.SUPER_ADMIN, passwordHash: superAdminPasswordHash },
   });
 
   await prisma.user.upsert({
     where: { email: "admin@snapore.local" },
-    update: { tenantId: tenant.id, name: "Snapore Tenant Admin", role: UserRole.ADMIN, active: true, ...(resetSeedPasswords ? { passwordHash: hashPassword(adminPassword) } : {}) },
-    create: { tenantId: tenant.id, email: "admin@snapore.local", name: "Snapore Tenant Admin", role: UserRole.ADMIN, passwordHash: hashPassword(adminPassword) },
+    update: { tenantId: tenant.id, name: "Snapore Tenant Admin", role: UserRole.ADMIN, active: true, ...(resetSeedPasswords ? { passwordHash: adminPasswordHash } : {}) },
+    create: { tenantId: tenant.id, email: "admin@snapore.local", name: "Snapore Tenant Admin", role: UserRole.ADMIN, passwordHash: adminPasswordHash },
   });
 
   const booth = await prisma.booth.upsert({

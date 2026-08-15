@@ -1,20 +1,22 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import { compare, hash } from "bcrypt";
 
-const SCRYPT_KEY_LENGTH = 64;
+const BCRYPT_SALT_ROUNDS = 12;
+const BCRYPT_MAX_PASSWORD_BYTES = 72;
+const BCRYPT_HASH_PATTERN = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 
 export function hashPassword(password: string) {
-  const salt = randomBytes(16);
-  const hash = scryptSync(password, salt, SCRYPT_KEY_LENGTH);
-  return `scrypt:${salt.toString("base64")}:${hash.toString("base64")}`;
+  if (Buffer.byteLength(password, "utf8") > BCRYPT_MAX_PASSWORD_BYTES) {
+    return Promise.reject(new RangeError("Password maksimal 72 byte agar dapat diproses bcrypt dengan aman."));
+  }
+  return hash(password, BCRYPT_SALT_ROUNDS);
 }
 
-export function verifyPassword(password: string, encoded: string | null) {
+export async function verifyPassword(password: string, encoded: string | null) {
   if (!encoded) return false;
-  const [algorithm, saltValue, hashValue] = encoded.split(":");
-  if (algorithm !== "scrypt" || !saltValue || !hashValue) return false;
-  const expected = Buffer.from(hashValue, "base64");
-  const actual = scryptSync(password, Buffer.from(saltValue, "base64"), expected.length);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  if (Buffer.byteLength(password, "utf8") > BCRYPT_MAX_PASSWORD_BYTES) return false;
+  if (!BCRYPT_HASH_PATTERN.test(encoded)) return false;
+  return compare(password, encoded).catch(() => false);
 }
 
 function encryptionKey() {

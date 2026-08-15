@@ -40,5 +40,6 @@ Password telah di-reset pada **10 Agustus 2026**, diverifikasi terhadap hash dat
 
 - Super Admin bootstrap: `SUPER_ADMIN_EMAIL` dan `SUPER_ADMIN_PASSWORD`.
 - Tenant Admin bootstrap: `ADMIN_PASSWORD`; bila kosong, seed memakai `Snapore#Admin73`.
+- Password bootstrap dan password baru disimpan sebagai hash bcrypt dengan cost factor 12; hash scrypt lama tidak diterima.
 - Seed tidak mereset password akun lama kecuali `SNAPORE_RESET_SEED_PASSWORDS=true` digunakan secara sengaja.
 - Installer desktop tidak menyertakan `ACCOUNT.md`, `.env`, atau password database.

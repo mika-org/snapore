@@ -35,6 +35,7 @@
   "dependencies": {
     "@prisma/adapter-pg": "latest",
     "@prisma/client": "latest",
+    "bcrypt": "^6.0.0",
     "lucide-react": "latest",
     "next": "latest",
     "pg": "latest",
@@ -45,6 +46,7 @@
     "zod": "latest"
   },
   "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
     "@types/node": "latest",
     "@types/pg": "latest",
     "@types/qrcode": "latest",

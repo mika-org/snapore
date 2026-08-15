@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const parsed = loginSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return NextResponse.json({ error: "Email atau password tidak valid." }, { status: 400 });
     const user = await prisma.user.findUnique({ where: { email: parsed.data.email }, include: { tenant: true } });
-    if (!user?.active || !verifyPassword(parsed.data.password, user.passwordHash)) {
+    if (!user?.active || !(await verifyPassword(parsed.data.password, user.passwordHash))) {
       return NextResponse.json({ error: "Email atau password salah." }, { status: 401 });
     }
     if (user.tenant && user.tenant.status !== "ACTIVE") {

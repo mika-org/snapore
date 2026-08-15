@@ -437,7 +437,7 @@ export async function POST(request: Request) {
           tenantId: data.role === UserRole.SUPER_ADMIN ? null : data.tenantId,
           name: data.name,
           email: data.email,
-          passwordHash: hashPassword(data.password),
+          passwordHash: await hashPassword(data.password),
           role: data.role,
         },
       });
@@ -465,7 +465,7 @@ export async function POST(request: Request) {
           email: data.email,
           role: data.role,
           active: data.active,
-          ...(data.password ? { passwordHash: hashPassword(data.password) } : {}),
+          ...(data.password ? { passwordHash: await hashPassword(data.password) } : {}),
         },
       });
       await prisma.auditLog.create({
